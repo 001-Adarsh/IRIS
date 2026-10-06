@@ -350,3 +350,8 @@ def execute_admin_plan(
         is_public_request=True,
         admin_key=admin_key,
     )
+
+@app.get('/')
+def home():
+    return {'status': 'online', 'service': 'IRIS API'}
+
