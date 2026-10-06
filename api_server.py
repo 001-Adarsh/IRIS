@@ -17,7 +17,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
@@ -31,8 +31,8 @@ from slowapi.util import get_remote_address
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from core.executor import IRISExecutor
+from core.router import provider_response_failed
 from core.synthesizer import AISynthesizer
-from providers.groq_provider import GroqProvider
 from tools.manager import ToolManager
 from tools.web_tool import search_web
 
@@ -68,7 +68,6 @@ app.add_middleware(
     allow_headers=["Content-Type", "X-IRIS-ADMIN-KEY"],
 )
 
-groq_provider = GroqProvider()
 synthesizer = AISynthesizer()
 
 
@@ -120,10 +119,18 @@ def _identity_reply(prompt: str) -> str | None:
     return None
 
 
+class ChatTurn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=2_000)
+
+
 class PromptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1, max_length=8_000)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=10)
 
     @field_validator("prompt")
     @classmethod
@@ -313,6 +320,21 @@ def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/v1/providers")
+@public_rate_limit
+def provider_status(request: Request) -> dict[str, list[dict[str, Any]]]:
+    providers = synthesizer.router.providers
+    return {
+        "providers": [
+            {
+                "name": name,
+                "available": bool(getattr(provider, "available", False)),
+            }
+            for name, provider in providers.items()
+        ]
+    }
+
+
 @app.post("/v1/chat/stream")
 @public_rate_limit
 def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
@@ -332,33 +354,111 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
             },
         )
 
-    if not groq_provider.available:
-        raise HTTPException(
-            status_code=503,
-            detail="The Groq provider is not configured.",
-        )
-
     def generate_events() -> Iterator[str]:
         try:
-            owner_profile = _owner_profile()
-            system_prompt = (
-                "You are IRIS, an AI assistant created by "
-                f"{owner_profile['name']}. Be helpful, clear, and honest. "
-                "Never claim that OpenAI, GPT-4, or another organization or "
-                "model created you. When asked about IRIS's creator or owner, "
-                "use the configured owner profile below and do not deny that "
-                "you know who created IRIS. Do not invent biographical details "
-                "or present unsupported claims as facts. For unrelated topics, "
-                "answer normally and acknowledge uncertainty when appropriate.\n\n"
-                "Configured owner profile:\n"
-                f"{json.dumps(owner_profile, ensure_ascii=False)}"
+            available = synthesizer.router.get_available_providers()
+            direct_route = re.match(
+                r"^@(groq|gemini|openrouter|ollama)\b(?:\s+(.*))?$",
+                body.prompt,
+                flags=re.IGNORECASE | re.DOTALL,
             )
-            for token in groq_provider.stream(body.prompt, system=system_prompt):
-                yield _sse_event("token", {"token": token})
+            if direct_route:
+                provider_name = direct_route.group(1).lower()
+                provider_prompt = (direct_route.group(2) or "").strip()
+                provider = synthesizer.router.providers[provider_name]
+                if not provider_prompt:
+                    yield _sse_event(
+                        "error",
+                        {"error": f"Add a prompt after @{provider_name}."},
+                    )
+                    return
+                if not getattr(provider, "available", False):
+                    yield _sse_event(
+                        "error",
+                        {"error": f"{provider_name.capitalize()} is not configured on this server."},
+                    )
+                    return
+
+                yield _sse_event(
+                    "status",
+                    {"message": f"Sending directly to {provider_name.capitalize()}…"},
+                )
+                answer = provider.generate(provider_prompt)
+                if (
+                    not answer
+                    or not str(answer).strip()
+                    or provider_response_failed(answer)
+                ):
+                    yield _sse_event(
+                        "error",
+                        {
+                            "error": (
+                                f"{provider_name.capitalize()} could not return "
+                                "a usable answer."
+                            )
+                        },
+                    )
+                    return
+                yield _sse_event("token", {"token": str(answer).strip()})
+                yield _sse_event(
+                    "council",
+                    {
+                        "providers": [provider_name],
+                        "synthesized_by": None,
+                        "mode": "direct",
+                    },
+                )
+            else:
+                if not available:
+                    yield _sse_event(
+                        "error",
+                        {"error": "No AI providers are configured on this server."},
+                    )
+                    return
+
+                yield _sse_event(
+                    "status",
+                    {"message": "IRIS Council is comparing available models…"},
+                )
+                result = synthesizer.synthesize_chat(
+                    re.sub(
+                        r"^@(council|compare)\s*",
+                        "",
+                        body.prompt,
+                        flags=re.IGNORECASE,
+                    ).strip(),
+                    [turn.model_dump() for turn in body.history],
+                    creator_name=_owner_profile()["name"],
+                )
+                answer = result.get("answer", "")
+                participants = result.get("providers", [])
+                if not answer.strip() or not participants:
+                    yield _sse_event(
+                        "error",
+                        {
+                            "error": (
+                                "IRIS Council could not get a usable response "
+                                "from any configured model."
+                            )
+                        },
+                    )
+                    return
+                yield _sse_event("token", {"token": answer})
+                yield _sse_event(
+                    "council",
+                    {
+                        "providers": participants,
+                        "synthesized_by": result.get("synthesized_by"),
+                        "mode": "council",
+                    },
+                )
             yield _sse_event("done", {"done": True})
         except Exception:
             logger.exception("IRIS chat stream failed")
-            yield _sse_event("error", {"error": "Chat generation failed."})
+            yield _sse_event(
+                "error",
+                {"error": "IRIS Council generation failed. Check server logs."},
+            )
 
     return StreamingResponse(
         generate_events(),
@@ -398,6 +498,7 @@ def research(request: Request, body: PromptRequest) -> dict[str, Any]:
         answer = synthesizer.synthesize(
             body.prompt,
             {"evidence": sources},
+            mode="force_council",
         )
     except Exception as exc:
         logger.exception("IRIS research synthesis failed")
@@ -569,6 +670,10 @@ def home() -> str:
         background: #7ed6a1;
         box-shadow: 0 0 10px #7ed6a18a;
       }
+      .status.unavailable .status-dot {
+        background: #e3a15f;
+        box-shadow: 0 0 10px #e3a15f70;
+      }
       .content {
         width: min(100%, 900px);
         flex: 1;
@@ -686,6 +791,12 @@ def home() -> str:
       .assistant .msg { border: 1px solid #292b39; border-top-left-radius: 5px; background: #141620; }
       .user .msg { border: 1px solid #6955a0; border-top-right-radius: 5px; background: #403267; }
       .error .msg { border-color: #783e49; background: #3a222b; color: #ffd0d0; }
+      .council-meta {
+        flex-basis: 100%;
+        margin: -14px 0 0 41px;
+        color: #85879a;
+        font-size: 10px;
+      }
       .composer-wrap { padding: 12px 0 20px; }
       form {
         display: flex;
@@ -772,7 +883,10 @@ def home() -> str:
       <main>
         <header class="topbar">
           <div class="topbar-title">A little more clarity, one question at a time.</div>
-          <div class="status"><span class="status-dot" aria-hidden="true"></span> Ready to help</div>
+          <div class="status" id="provider-status" title="Availability shows whether provider credentials are configured; each model is verified when used.">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="provider-status-text">Checking council…</span>
+          </div>
         </header>
         <div class="content">
           <section id="welcome" aria-labelledby="welcome-title">
@@ -815,7 +929,29 @@ def home() -> str:
       const button = document.getElementById("send");
       const welcome = document.getElementById("welcome");
       const newChatButton = document.getElementById("new-chat");
+      const providerStatus = document.getElementById("provider-status");
+      const providerStatusText = document.getElementById("provider-status-text");
+      const conversationHistory = [];
       let activeRequest = null;
+
+      fetch("/v1/providers")
+        .then((response) => {
+          if (!response.ok) throw new Error(`Status request failed (${response.status})`);
+          return response.json();
+        })
+        .then(({ providers }) => {
+          const configured = providers
+            .filter((provider) => provider.available)
+            .map((provider) => provider.name.toUpperCase());
+          providerStatusText.textContent = configured.length
+            ? `Council configured · ${configured.join(" + ")}`
+            : "No council providers configured";
+          if (!configured.length) providerStatus.classList.add("unavailable");
+        })
+        .catch(() => {
+          providerStatusText.textContent = "Council status unavailable";
+          providerStatus.classList.add("unavailable");
+        });
 
       function addMessage(text, kind) {
         const row = document.createElement("div");
@@ -841,6 +977,7 @@ def home() -> str:
         activeRequest = null;
         button.disabled = false;
         chat.replaceChildren();
+        conversationHistory.length = 0;
         welcome.hidden = false;
         input.value = "";
         input.focus();
@@ -879,11 +1016,18 @@ def home() -> str:
         const controller = new AbortController();
         activeRequest = controller;
         const answer = addMessage("", "assistant");
+        let hasToken = false;
+        let streamError = "";
+        let councilInfo = null;
+        let requestComplete = false;
         try {
           const response = await fetch("/v1/chat/stream", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt }),
+            body: JSON.stringify({
+              prompt,
+              history: conversationHistory.slice(-10),
+            }),
             signal: controller.signal,
           });
           if (!response.ok) {
@@ -899,7 +1043,6 @@ def home() -> str:
           const reader = response.body.getReader();
           const decoder = new TextDecoder("utf-8");
           let pending = "";
-          let streamError = "";
           const consumeFrame = (frame) => {
             const data = frame.split(/\\r?\\n/)
               .filter((line) => line.startsWith("data:"))
@@ -907,11 +1050,18 @@ def home() -> str:
               .join("\\n");
             if (!data) return;
             const payload = JSON.parse(data);
+            if (payload.status && !hasToken) {
+              answer.textContent = payload.status;
+            }
             if (payload.token) {
+              if (!hasToken) answer.textContent = "";
+              hasToken = true;
               answer.textContent += payload.token;
               chat.scrollTop = chat.scrollHeight;
             }
             if (payload.error) streamError = payload.error;
+            if (payload.council) councilInfo = payload.council;
+            if (payload.done) requestComplete = true;
           };
 
           while (true) {
@@ -926,6 +1076,31 @@ def home() -> str:
             }
           }
           if (streamError) throw new Error(streamError);
+          if (requestComplete && hasToken) {
+            conversationHistory.push(
+              { role: "user", content: prompt },
+              { role: "assistant", content: answer.textContent },
+            );
+            if (conversationHistory.length > 10) {
+              conversationHistory.splice(0, conversationHistory.length - 10);
+            }
+            if (councilInfo) {
+              const participants = (councilInfo.providers || [])
+                .map((name) => name.toUpperCase());
+              const judge = councilInfo.synthesized_by
+                ? ` · synthesized by ${councilInfo.synthesized_by.toUpperCase()}`
+                : "";
+              const label = councilInfo.mode === "direct"
+                ? `Direct · ${participants.join(", ")}`
+                : participants.length > 1
+                  ? `IRIS Council · ${participants.join(" + ")}${judge}`
+                  : `Single model · ${participants.join("")} · no multi-model consensus`;
+              const meta = document.createElement("span");
+              meta.className = "council-meta";
+              meta.textContent = label;
+              answer.parentElement.appendChild(meta);
+            }
+          }
         } catch (error) {
           if (error.name !== "AbortError") {
             answer.parentElement.classList.add("error");

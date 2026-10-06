@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import api_server
 from core.executor import IRISExecutor
+from core.synthesizer import AISynthesizer
 from providers.groq_provider import GroqProvider
 
 
@@ -54,8 +55,10 @@ class TestGroqStreaming(unittest.TestCase):
         response = MagicMock()
         response.__enter__.return_value = response
         response.iter_lines.return_value = [
-            'data: {"choices":[{"delta":{"content":"hello"}}]}',
-            "data: [DONE]",
+            'data: {"choices":[{"delta":{"content":"I’m IRIS — café"}}]}'.encode(
+                "utf-8"
+            ),
+            b"data: [DONE]",
         ]
         provider = GroqProvider(api_key="test-groq-key")
 
@@ -65,12 +68,39 @@ class TestGroqStreaming(unittest.TestCase):
         ) as post:
             tokens = list(provider.stream("Say hello"))
 
-        self.assertEqual(tokens, ["hello"])
+        self.assertEqual(tokens, ["I’m IRIS — café"])
         self.assertEqual(
             post.call_args.kwargs["headers"]["Authorization"],
             "Bearer test-groq-key",
         )
         self.assertTrue(post.call_args.kwargs["json"]["stream"])
+
+
+class TestChatSynthesis(unittest.TestCase):
+    def test_chat_synthesis_forces_council_and_preserves_context(self):
+        synthesizer = AISynthesizer()
+        synthesizer.router.compare = MagicMock(
+            return_value={
+                "final": "Synthesized answer",
+                "providers": ["groq", "gemini"],
+                "synthesized_by": "groq",
+            }
+        )
+
+        result = synthesizer.synthesize_chat(
+            "What about its creator?",
+            [{"role": "user", "content": "Who is IRIS?"}],
+        )
+
+        self.assertEqual(result["answer"], "Synthesized answer")
+        self.assertEqual(result["providers"], ["groq", "gemini"])
+        prompt = synthesizer.router.compare.call_args.args[0]
+        self.assertIn("USER: Who is IRIS?", prompt)
+        self.assertIn("What about its creator?", prompt)
+        self.assertEqual(
+            synthesizer.router.compare.call_args.kwargs["mode"],
+            "force_council",
+        )
 
 
 class TestPublicApi(unittest.TestCase):
@@ -83,6 +113,84 @@ class TestPublicApi(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"status": "ok"})
 
+    def test_home_serves_web_chat(self):
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers["content-type"])
+        self.assertIn("IRIS — Your AI workspace", response.text)
+        self.assertIn("What’s on your mind?", response.text)
+        self.assertIn("data-prompt=", response.text)
+        self.assertIn("New conversation", response.text)
+        self.assertIn("/v1/chat/stream", response.text)
+
+    def test_identity_questions_use_configured_creator_without_groq(self):
+        response = self.client.post(
+            "/v1/chat/stream",
+            json={"prompt": "Who created you?"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("IRIS was created by Adarsh Dwivedi.", response.text)
+        self.assertNotIn("OpenAI", response.text)
+        self.assertIn("event: done", response.text)
+
+    def test_self_introduction_names_creator_and_assistant_capabilities(self):
+        response = self.client.post(
+            "/v1/chat/stream",
+            json={"prompt": "Tell me about yourself and who created you"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("I'm IRIS, an AI assistant created by Adarsh Dwivedi.", response.text)
+        self.assertIn("software-development tasks", response.text)
+
+    def test_live_chat_uses_synthesizer_with_context_and_reports_council(self):
+        with (
+            patch.object(
+                api_server.synthesizer.router,
+                "get_available_providers",
+                return_value={"groq": object(), "gemini": object()},
+            ),
+            patch.object(
+                api_server.synthesizer,
+                "synthesize_chat",
+                return_value={
+                    "answer": "A grounded answer.",
+                    "providers": ["groq", "gemini"],
+                    "synthesized_by": "groq",
+                },
+            ) as synthesize_chat,
+        ):
+            response = self.client.post(
+                "/v1/chat/stream",
+                json={
+                    "prompt": "@council Tell me more about him",
+                    "history": [
+                        {"role": "user", "content": "Who created IRIS?"},
+                        {
+                            "role": "assistant",
+                            "content": "Adarsh Dwivedi created IRIS.",
+                        },
+                    ],
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("A grounded answer.", response.text)
+        self.assertIn('"providers": ["groq", "gemini"]', response.text)
+        self.assertEqual(
+            synthesize_chat.call_args.args[0],
+            "Tell me more about him",
+        )
+        self.assertEqual(
+            synthesize_chat.call_args.args[1][0]["content"],
+            "Who created IRIS?",
+        )
+        self.assertEqual(
+            synthesize_chat.call_args.kwargs["creator_name"],
+            "Adarsh Dwivedi",
+        )
+
     def test_blank_prompt_is_rejected(self):
         response = self.client.post(
             "/v1/chat/stream",
@@ -92,11 +200,19 @@ class TestPublicApi(unittest.TestCase):
 
     def test_chat_returns_sse_token_events(self):
         with (
-            patch.object(api_server.groq_provider, "available", True),
             patch.object(
-                api_server.groq_provider,
-                "stream",
-                return_value=iter(["Hello", " world"]),
+                api_server.synthesizer.router,
+                "get_available_providers",
+                return_value={"groq": object()},
+            ),
+            patch.object(
+                api_server.synthesizer,
+                "synthesize_chat",
+                return_value={
+                    "answer": "Hello world",
+                    "providers": ["groq"],
+                    "synthesized_by": None,
+                },
             ),
         ):
             response = self.client.post(
@@ -105,8 +221,57 @@ class TestPublicApi(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn('event: token\ndata: {"token": "Hello"}', response.text)
+        self.assertIn('event: token\ndata: {"token": "Hello world"}', response.text)
+        self.assertIn('"mode": "council"', response.text)
         self.assertIn('event: done\ndata: {"done": true}', response.text)
+
+    def test_provider_status_reports_configuration_without_secrets(self):
+        providers = {
+            "gemini": type("Gemini", (), {"available": True})(),
+            "openrouter": type("OpenRouter", (), {"available": False})(),
+        }
+        with patch.object(
+            api_server.synthesizer.router, "providers", providers
+        ):
+            response = self.client.get("/v1/providers")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "providers": [
+                    {"name": "gemini", "available": True},
+                    {"name": "openrouter", "available": False},
+                ]
+            },
+        )
+
+    def test_explicit_provider_route_calls_selected_provider(self):
+        for provider_name in ("gemini", "openrouter"):
+            with self.subTest(provider=provider_name):
+                provider = MagicMock()
+                provider.available = True
+                provider.generate.return_value = f"Direct {provider_name} answer"
+                with patch.object(
+                    api_server.synthesizer.router,
+                    "providers",
+                    {provider_name: provider},
+                ):
+                    response = self.client.post(
+                        "/v1/chat/stream",
+                        json={
+                            "prompt": (
+                                f"@{provider_name} Reply with a short greeting"
+                            )
+                        },
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(f"Direct {provider_name} answer", response.text)
+                self.assertIn('"mode": "direct"', response.text)
+                provider.generate.assert_called_once_with(
+                    "Reply with a short greeting"
+                )
 
     def test_research_uses_web_evidence_for_synthesis(self):
         with (
@@ -139,6 +304,10 @@ class TestPublicApi(unittest.TestCase):
             "https://example.com",
         )
         synthesize.assert_called_once()
+        self.assertEqual(
+            synthesize.call_args.kwargs["mode"],
+            "force_council",
+        )
 
     def test_admin_endpoint_rejects_missing_key(self):
         with patch.dict(os.environ, {"IRIS_ADMIN_KEY": "test-admin-key"}):
@@ -171,7 +340,11 @@ class TestPublicApi(unittest.TestCase):
     def test_rate_limit_is_shared_across_public_routes(self):
         with (
             patch.dict(os.environ, {"IRIS_ADMIN_KEY": "test-admin-key"}),
-            patch.object(api_server.groq_provider, "available", False),
+            patch.object(
+                api_server.synthesizer.router,
+                "get_available_providers",
+                return_value={},
+            ),
         ):
             for index in range(21):
                 if index % 2:

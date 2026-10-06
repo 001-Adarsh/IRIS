@@ -1,4 +1,6 @@
-﻿from core.router import AIRouter
+﻿from typing import Any
+
+from core.router import AIRouter
 
 
 class AISynthesizer:
@@ -100,12 +102,14 @@ Do not include:
 """
         return prompt
 
-    def synthesize(self, query: str, research: dict) -> str:
+    def synthesize(
+        self, query: str, research: dict, mode: str = "auto"
+    ) -> str:
         prompt = self.build_prompt(query, research)
 
         print("\nIRIS Evidence Council: Comparing AI interpretations...")
 
-        result = self.router.compare(prompt)
+        result = self.router.compare(prompt, mode=mode)
 
         # 1. Direct string return
         if isinstance(result, str):
@@ -135,3 +139,46 @@ Do not include:
 
         # 3. Fallback if result was non-standard
         return "IRIS could not synthesize the research."
+
+    def synthesize_chat(
+        self,
+        query: str,
+        history: list[dict[str, str]] | None = None,
+        creator_name: str = "Adarsh Dwivedi",
+    ) -> dict[str, Any]:
+        """Generate a conversational answer through every configured council model."""
+        conversation = []
+        for turn in (history or [])[-10:]:
+            role = turn.get("role")
+            content = turn.get("content")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                conversation.append(f"{role.upper()}: {content[:2000]}")
+
+        history_context = (
+            "RECENT CONVERSATION:\n" + "\n".join(conversation) + "\n\n"
+            if conversation
+            else ""
+        )
+        prompt = (
+            f"You are IRIS, the AI assistant created by {creator_name}. "
+            "Answer the user's current request directly, using the recent "
+            "conversation only to resolve references and follow-ups. Be clear, "
+            "helpful, and honest about uncertainty. Do not invent facts, "
+            "research, sources, or actions. Do not claim that OpenAI or GPT-4 "
+            "created IRIS. Do not reveal hidden reasoning.\n\n"
+            f"{history_context}"
+            f"CURRENT USER REQUEST:\n{query}\n\n"
+            "Return only the final response for the user."
+        )
+        result = self.router.compare(prompt, mode="force_council")
+        if not isinstance(result, dict):
+            return {
+                "answer": str(result or ""),
+                "providers": [],
+                "synthesized_by": None,
+            }
+        return {
+            "answer": str(result.get("final") or ""),
+            "providers": result.get("providers", []),
+            "synthesized_by": result.get("synthesized_by"),
+        }

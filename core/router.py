@@ -14,7 +14,7 @@ DEFAULT_TIMEOUT_SECONDS = 45.0
 FAST_PROVIDER_TIMEOUT_SECONDS = 5.0
 
 
-def _has_error(val: Any) -> bool:
+def provider_response_failed(val: Any) -> bool:
     if val is None:
         return True
     s = str(val).strip().lower()
@@ -25,6 +25,7 @@ def _has_error(val: Any) -> bool:
             "gemini api key is not configured",
             "gemini error:",
             "gemini rate limited (http 429)",
+            "gemini returned an empty response.",
             "ollama is not responding.",
             "ollama error:",
             "openrouter api key not configured",
@@ -106,7 +107,7 @@ class AIRouter:
                 if done:
                     try:
                         name, result = fast_future.result()
-                        if result and not _has_error(result):
+                        if result and not provider_response_failed(result):
                             return {
                                 "answers": {name: str(result)},
                                 "final": str(result),
@@ -143,7 +144,7 @@ class AIRouter:
             for future in done:
                 try:
                     name, result = future.result()
-                    if result and not _has_error(result):
+                    if result and not provider_response_failed(result):
                         answers[name] = str(result)
                 except Exception as exc:
                     print(f"IRIS: {futures[future]} error: {exc}")
@@ -163,6 +164,7 @@ class AIRouter:
                     "answers": answers,
                     "final": answer,
                     "providers": [name],
+                    "synthesized_by": None,
                 }
 
             print(
@@ -198,11 +200,12 @@ class AIRouter:
                 if done:
                     try:
                         judged = judge_future.result()
-                        if judged and not _has_error(judged):
+                        if judged and not provider_response_failed(judged):
                             return {
                                 "answers": answers,
                                 "final": str(judged),
                                 "providers": list(answers),
+                                "synthesized_by": judge_name,
                             }
                     except Exception as exc:
                         print(f"IRIS: {judge_name} synthesis error: {exc}")
@@ -221,6 +224,7 @@ class AIRouter:
                 "answers": answers,
                 "final": preferred_answer,
                 "providers": list(answers),
+                "synthesized_by": None,
             }
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
