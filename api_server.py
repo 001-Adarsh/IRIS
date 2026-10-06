@@ -21,7 +21,7 @@ from typing import Any, Iterator
 from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -351,7 +351,194 @@ def execute_admin_plan(
         admin_key=admin_key,
     )
 
-@app.get('/')
-def home():
-    return {'status': 'online', 'service': 'IRIS API'}
+@app.get("/", response_class=HTMLResponse)
+def home() -> str:
+    return """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#10141d">
+    <title>IRIS — AI Assistant</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #10141d;
+        color: #edf1f8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: radial-gradient(ellipse at top, #202b42 0, #10141d 55%);
+      }
+      main {
+        width: min(100%, 760px);
+        height: min(820px, calc(100vh - 48px));
+        min-height: 480px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid #30394a;
+        border-radius: 20px;
+        background: #171d28;
+        box-shadow: 0 24px 80px #0006;
+      }
+      header { padding: 24px 26px 18px; border-bottom: 1px solid #30394a; }
+      h1 { margin: 0; font-size: 1.35rem; letter-spacing: .02em; }
+      header p { margin: 7px 0 0; color: #aab5c8; font-size: .92rem; }
+      #chat {
+        flex: 1;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 22px 26px;
+      }
+      .msg {
+        max-width: 88%;
+        padding: 12px 15px;
+        border-radius: 15px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .assistant { align-self: flex-start; background: #242d3b; }
+      .user { align-self: flex-end; background: #315ac7; }
+      .error { color: #ffd0d0; border: 1px solid #783e49; background: #3a222b; }
+      form { display: flex; gap: 10px; padding: 16px; border-top: 1px solid #30394a; }
+      textarea {
+        flex: 1;
+        min-width: 0;
+        max-height: 150px;
+        resize: vertical;
+        border: 1px solid #3a4558;
+        border-radius: 12px;
+        padding: 12px 14px;
+        color: inherit;
+        background: #111722;
+        font: inherit;
+      }
+      textarea:focus { outline: 2px solid #6487ee; outline-offset: 1px; }
+      button {
+        align-self: flex-end;
+        min-height: 44px;
+        border: 0;
+        border-radius: 12px;
+        padding: 0 18px;
+        color: white;
+        background: #4169df;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button:disabled { cursor: wait; opacity: .6; }
+      @media (max-width: 520px) {
+        body { padding: 0; }
+        main { width: 100%; height: 100vh; min-height: 0; border: 0; border-radius: 0; }
+        header { padding: 20px; }
+        #chat { padding: 18px; }
+        form { padding: 12px; }
+        button { padding: 0 14px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>IRIS</h1>
+        <p>Your AI assistant. Ask a question to get started.</p>
+      </header>
+      <section id="chat" aria-live="polite" aria-label="Conversation">
+        <div class="msg assistant">Hello! I’m IRIS. How can I help?</div>
+      </section>
+      <form id="prompt-form">
+        <textarea id="prompt" rows="1" maxlength="8000" aria-label="Your message" placeholder="Message IRIS…" required></textarea>
+        <button id="send" type="submit">Send</button>
+      </form>
+    </main>
+    <script>
+      const chat = document.getElementById("chat");
+      const form = document.getElementById("prompt-form");
+      const input = document.getElementById("prompt");
+      const button = document.getElementById("send");
 
+      function addMessage(text, kind) {
+        const message = document.createElement("div");
+        message.className = `msg ${kind}`;
+        message.textContent = text;
+        chat.appendChild(message);
+        chat.scrollTop = chat.scrollHeight;
+        return message;
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const prompt = input.value.trim();
+        if (!prompt || button.disabled) return;
+
+        addMessage(prompt, "user");
+        input.value = "";
+        button.disabled = true;
+        const answer = addMessage("", "assistant");
+        try {
+          const response = await fetch("/v1/chat/stream", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt }),
+          });
+          if (!response.ok) {
+            let detail = `Request failed (${response.status})`;
+            try {
+              const body = await response.json();
+              if (body.detail) detail = body.detail;
+            } catch (_) {}
+            throw new Error(detail);
+          }
+          if (!response.body) throw new Error("Streaming is not supported by this browser.");
+
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let pending = "";
+          let streamError = "";
+          const consumeFrame = (frame) => {
+            const data = frame.split(/\\r?\\n/)
+              .filter((line) => line.startsWith("data:"))
+              .map((line) => line.slice(5).trimStart())
+              .join("\\n");
+            if (!data) return;
+            const payload = JSON.parse(data);
+            if (payload.token) {
+              answer.textContent += payload.token;
+              chat.scrollTop = chat.scrollHeight;
+            }
+            if (payload.error) streamError = payload.error;
+          };
+
+          while (true) {
+            const { value, done } = await reader.read();
+            pending += decoder.decode(value, { stream: !done });
+            const frames = pending.split(/\\r?\\n\\r?\\n/);
+            pending = frames.pop();
+            for (const frame of frames) consumeFrame(frame);
+            if (done) {
+              if (pending) consumeFrame(pending);
+              break;
+            }
+          }
+          if (streamError) throw new Error(streamError);
+        } catch (error) {
+          answer.classList.add("error");
+          answer.textContent = `Error: ${error.message}`;
+        } finally {
+          button.disabled = false;
+          input.focus();
+        }
+      });
+    </script>
+  </body>
+</html>"""
