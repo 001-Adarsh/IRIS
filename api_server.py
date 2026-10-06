@@ -972,6 +972,23 @@ def home() -> str:
         return message;
       }
 
+      function showCouncilMeta(answer, councilInfo) {
+        const participants = (councilInfo.providers || [])
+          .map((name) => name.toUpperCase());
+        const judge = councilInfo.synthesized_by
+          ? ` · synthesized by ${councilInfo.synthesized_by.toUpperCase()}`
+          : "";
+        const label = councilInfo.mode === "direct"
+          ? `Direct · ${participants.join(", ")}`
+          : participants.length > 1
+            ? `IRIS Council · ${participants.join(" + ")}${judge}`
+            : `Single model · ${participants.join("")} · no multi-model consensus`;
+        const meta = document.createElement("span");
+        meta.className = "council-meta";
+        meta.textContent = label;
+        answer.parentElement.appendChild(meta);
+      }
+
       newChatButton.addEventListener("click", () => {
         if (activeRequest) activeRequest.abort();
         activeRequest = null;
@@ -1018,7 +1035,6 @@ def home() -> str:
         const answer = addMessage("", "assistant");
         let hasToken = false;
         let streamError = "";
-        let councilInfo = null;
         let requestComplete = false;
         try {
           const response = await fetch("/v1/chat/stream", {
@@ -1060,7 +1076,9 @@ def home() -> str:
               chat.scrollTop = chat.scrollHeight;
             }
             if (payload.error) streamError = payload.error;
-            if (payload.council) councilInfo = payload.council;
+            if (payload.council) {
+              showCouncilMeta(answer, payload.council);
+            }
             if (payload.done) requestComplete = true;
           };
 
@@ -1083,22 +1101,6 @@ def home() -> str:
             );
             if (conversationHistory.length > 10) {
               conversationHistory.splice(0, conversationHistory.length - 10);
-            }
-            if (councilInfo) {
-              const participants = (councilInfo.providers || [])
-                .map((name) => name.toUpperCase());
-              const judge = councilInfo.synthesized_by
-                ? ` · synthesized by ${councilInfo.synthesized_by.toUpperCase()}`
-                : "";
-              const label = councilInfo.mode === "direct"
-                ? `Direct · ${participants.join(", ")}`
-                : participants.length > 1
-                  ? `IRIS Council · ${participants.join(" + ")}${judge}`
-                  : `Single model · ${participants.join("")} · no multi-model consensus`;
-              const meta = document.createElement("span");
-              meta.className = "council-meta";
-              meta.textContent = label;
-              answer.parentElement.appendChild(meta);
             }
           }
         } catch (error) {

@@ -121,6 +121,8 @@ class TestPublicApi(unittest.TestCase):
         self.assertIn("What’s on your mind?", response.text)
         self.assertIn("data-prompt=", response.text)
         self.assertIn("New conversation", response.text)
+        self.assertIn("showCouncilMeta", response.text)
+        self.assertIn("conversationHistory.slice(-10)", response.text)
         self.assertIn("/v1/chat/stream", response.text)
 
     def test_identity_questions_use_configured_creator_without_groq(self):
@@ -272,6 +274,26 @@ class TestPublicApi(unittest.TestCase):
                 provider.generate.assert_called_once_with(
                     "Reply with a short greeting"
                 )
+
+    def test_explicit_unconfigured_provider_returns_clear_error(self):
+        provider = MagicMock()
+        provider.available = False
+        with patch.object(
+            api_server.synthesizer.router,
+            "providers",
+            {"gemini": provider},
+        ):
+            response = self.client.post(
+                "/v1/chat/stream",
+                json={"prompt": "@gemini Check this route"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            "Gemini is not configured on this server.",
+            response.text,
+        )
+        provider.generate.assert_not_called()
 
     def test_research_uses_web_evidence_for_synthesis(self):
         with (
