@@ -223,7 +223,8 @@ class TestPublicApi(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn('event: token\ndata: {"token": "Hello world"}', response.text)
+        self.assertIn('"token": "Hello world"', response.text)
+        self.assertIn('"council": {"providers": ["groq"]', response.text)
         self.assertIn('"mode": "council"', response.text)
         self.assertIn('event: done\ndata: {"done": true}', response.text)
 

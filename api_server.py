@@ -399,15 +399,16 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
                         },
                     )
                     return
-                yield _sse_event("token", {"token": str(answer).strip()})
+                route_info = {
+                    "providers": [provider_name],
+                    "synthesized_by": None,
+                    "mode": "direct",
+                }
                 yield _sse_event(
-                    "council",
-                    {
-                        "providers": [provider_name],
-                        "synthesized_by": None,
-                        "mode": "direct",
-                    },
+                    "token",
+                    {"token": str(answer).strip(), "council": route_info},
                 )
+                yield _sse_event("council", route_info)
             else:
                 if not available:
                     yield _sse_event(
@@ -443,15 +444,16 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
                         },
                     )
                     return
-                yield _sse_event("token", {"token": answer})
+                route_info = {
+                    "providers": participants,
+                    "synthesized_by": result.get("synthesized_by"),
+                    "mode": "council",
+                }
                 yield _sse_event(
-                    "council",
-                    {
-                        "providers": participants,
-                        "synthesized_by": result.get("synthesized_by"),
-                        "mode": "council",
-                    },
+                    "token",
+                    {"token": answer, "council": route_info},
                 )
+                yield _sse_event("council", route_info)
             yield _sse_event("done", {"done": True})
         except Exception:
             logger.exception("IRIS chat stream failed")
@@ -975,6 +977,7 @@ def home() -> str:
       function showCouncilMeta(answer, councilInfo) {
         const participants = (councilInfo.providers || [])
           .map((name) => name.toUpperCase());
+        if (answer.parentElement.querySelector(".council-meta")) return;
         const judge = councilInfo.synthesized_by
           ? ` · synthesized by ${councilInfo.synthesized_by.toUpperCase()}`
           : "";
@@ -1034,8 +1037,8 @@ def home() -> str:
         activeRequest = controller;
         const answer = addMessage("", "assistant");
         let hasToken = false;
+        let historyStored = false;
         let streamError = "";
-        let requestComplete = false;
         try {
           const response = await fetch("/v1/chat/stream", {
             method: "POST",
@@ -1073,13 +1076,24 @@ def home() -> str:
               if (!hasToken) answer.textContent = "";
               hasToken = true;
               answer.textContent += payload.token;
+              if (!historyStored) {
+                conversationHistory.push(
+                  { role: "user", content: prompt },
+                  { role: "assistant", content: "" },
+                );
+                historyStored = true;
+              }
+              conversationHistory[conversationHistory.length - 1].content =
+                answer.textContent;
+              if (conversationHistory.length > 10) {
+                conversationHistory.splice(0, conversationHistory.length - 10);
+              }
               chat.scrollTop = chat.scrollHeight;
             }
             if (payload.error) streamError = payload.error;
             if (payload.council) {
               showCouncilMeta(answer, payload.council);
             }
-            if (payload.done) requestComplete = true;
           };
 
           while (true) {
@@ -1094,15 +1108,6 @@ def home() -> str:
             }
           }
           if (streamError) throw new Error(streamError);
-          if (requestComplete && hasToken) {
-            conversationHistory.push(
-              { role: "user", content: prompt },
-              { role: "assistant", content: answer.textContent },
-            );
-            if (conversationHistory.length > 10) {
-              conversationHistory.splice(0, conversationHistory.length - 10);
-            }
-          }
         } catch (error) {
           if (error.name !== "AbortError") {
             answer.parentElement.classList.add("error");
