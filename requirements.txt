@@ -22,3 +22,6 @@ typing_extensions==4.16.0
 
 pandas
 openpyxl
+
+beautifulsoup4
+lxml
