@@ -1,0 +1,14 @@
+{
+  "created": "2026-09-28T02:52:42.059974",
+  "files": [
+    {
+      "path": "tools/diagnostics.py",
+      "existed": false
+    },
+    {
+      "path": "tools/manager.py",
+      "existed": true,
+      "backup": "C:\\Users\\adars\\IRIS\\deployment_backups\\20260928_025242_059622\\tools\\manager.py"
+    }
+  ]
+}

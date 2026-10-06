@@ -1,0 +1,276 @@
+﻿import json
+from pathlib import Path
+
+from core.router import AIRouter
+from core.sandbox import IRISSandbox
+from core.test_runner import IRISTestRunner
+from core.upgrade_manager import IRISUpgradeManager
+
+
+class IRISDevelopmentWorkflow:
+
+    def __init__(self, project_root=None):
+        self.project_root = Path(
+            project_root or Path(__file__).resolve().parent.parent
+        )
+
+        self.router = AIRouter()
+        self.sandbox = IRISSandbox()
+        self.upgrades = IRISUpgradeManager(self.project_root)
+
+    def _planning_prompt(self, objective, project_files):
+
+        files_text = "\n".join(project_files[:200])
+
+        return f"""
+You are IRIS, an autonomous software development assistant.
+
+USER DEVELOPMENT OBJECTIVE:
+{objective}
+
+SANDBOX PROJECT FILES:
+{files_text}
+
+Your job is to design a safe implementation inside the sandbox.
+
+RULES:
+
+1. Production files must never be modified.
+2. Only files relevant to the objective should be changed.
+3. Do not modify .env files.
+4. Do not modify databases.
+5. Do not install software.
+6. Do not execute arbitrary shell commands.
+7. Prefer small, focused changes.
+8. Preserve existing architecture unless the objective requires otherwise.
+9. Include complete file contents for files that must be created or replaced.
+10. The result must be valid JSON.
+11. Do not use markdown code fences.
+
+Return:
+
+{{
+  "objective": "short objective",
+  "reasoning_summary": "brief implementation explanation",
+  "changes": [
+    {{
+      "path": "relative/path/to/file.py",
+      "action": "create|replace",
+      "content": "complete file content"
+    }}
+  ],
+  "tests": [
+    "description of test"
+  ]
+}}
+"""
+
+    def _parse_plan(self, response):
+
+        start = response.find("{")
+        end = response.rfind("}")
+
+        if start == -1 or end == -1:
+            raise ValueError(
+                "Development planner did not return JSON."
+            )
+
+        data = json.loads(response[start:end + 1])
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Development plan is not a JSON object."
+            )
+
+        data.setdefault("changes", [])
+        data.setdefault("tests", [])
+
+        return data
+
+    def _safe_change_path(self, project_path, relative_path):
+
+        relative = Path(relative_path)
+
+        if relative.is_absolute():
+            raise PermissionError(
+                "Development change must use a relative path."
+            )
+
+        if any(part == ".." for part in relative.parts):
+            raise PermissionError(
+                "Development change cannot escape the sandbox project."
+            )
+
+        target = (Path(project_path) / relative).resolve()
+        root = Path(project_path).resolve()
+
+        try:
+            target.relative_to(root)
+        except ValueError:
+            raise PermissionError(
+                "Development change escaped the sandbox."
+            )
+
+        if target.name.startswith(".env"):
+            raise PermissionError(
+                "Development cannot modify environment files."
+            )
+
+        if target.suffix.lower() in {
+            ".db",
+            ".sqlite",
+            ".sqlite3"
+        }:
+            raise PermissionError(
+                "Development cannot modify database files."
+            )
+
+        return target
+
+    def develop(self, objective):
+
+        print("\n=== IRIS AUTONOMOUS DEVELOPMENT ===")
+        print(f"Objective: {objective}")
+
+        snapshot = self.sandbox.create_project_snapshot(
+            "autonomous_development"
+        )
+
+        workspace = Path(snapshot["workspace"])
+        project_path = Path(snapshot["project"])
+
+        print(f"Sandbox: {workspace}")
+        print(f"Project: {project_path}")
+        print("Production modified: NO")
+
+        project_files = [
+            str(path.relative_to(project_path))
+            for path in project_path.rglob("*")
+            if path.is_file()
+        ]
+
+        print("\nIRIS analyzing project...")
+
+        planning_result = self.router.compare(
+            self._planning_prompt(
+                objective,
+                project_files
+            )
+        )
+
+        response = planning_result.get("final", "").strip()
+
+        if not response:
+            return {
+                "success": False,
+                "reason": "No development plan was produced.",
+                "production_modified": False
+            }
+
+        try:
+            plan = self._parse_plan(response)
+        except Exception as e:
+            return {
+                "success": False,
+                "reason": f"Invalid development plan: {e}",
+                "production_modified": False
+            }
+
+        changes = plan.get("changes", [])
+
+        if not changes:
+            return {
+                "success": False,
+                "reason": "Development planner proposed no changes.",
+                "production_modified": False
+            }
+
+        print(f"\nIRIS proposed {len(changes)} sandbox change(s).")
+
+        applied_changes = []
+
+        for change in changes:
+
+            if not isinstance(change, dict):
+                continue
+
+            relative_path = change.get("path")
+            action = change.get("action")
+            content = change.get("content")
+
+            if not relative_path or action not in {"create", "replace"}:
+                continue
+
+            if not isinstance(content, str):
+                continue
+
+            try:
+                target = self._safe_change_path(
+                    project_path,
+                    relative_path
+                )
+            except Exception as e:
+                print(
+                    f"Blocked change {relative_path}: {e}"
+                )
+                continue
+
+            if action == "create" and target.exists():
+                print(
+                    f"Skipped existing file: {relative_path}"
+                )
+                continue
+
+            target.parent.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            target.write_text(
+                content,
+                encoding="utf-8"
+            )
+
+            applied_changes.append(
+                relative_path
+            )
+
+            print(
+                f"Sandbox changed: {relative_path}"
+            )
+
+        if not applied_changes:
+            return {
+                "success": False,
+                "reason": "No safe changes were applied.",
+                "workspace": str(workspace),
+                "production_modified": False
+            }
+
+        print("\n=== IRIS SANDBOX TEST ===")
+
+        tester = IRISTestRunner(project_path)
+        test_results = tester.run()
+
+        print(
+            f"Sandbox tests passed: {test_results['passed']}"
+        )
+
+        proposal = self.upgrades.create_proposal(
+            objective=objective,
+            workspace=workspace,
+            changes=applied_changes,
+            test_results=test_results
+        )
+
+        return {
+            "success": test_results["passed"],
+            "objective": objective,
+            "workspace": str(workspace),
+            "project": str(project_path),
+            "changes": applied_changes,
+            "tests": test_results,
+            "proposal": proposal,
+            "production_modified": False,
+            "approval_required": True
+        }

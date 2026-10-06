@@ -1,0 +1,153 @@
+﻿import json
+from core.router import AIRouter
+
+
+class IRISPlanner:
+
+    def __init__(self):
+        self.router = AIRouter()
+
+    def build_prompt(self, request: str) -> str:
+
+        return f"""
+You are the task planner for IRIS, a personal AI computer assistant.
+
+USER REQUEST:
+{request}
+
+AVAILABLE TOOLS:
+- search_web
+- read_webpage
+- run_powershell
+- run_python
+- create_file
+- read_file
+- list_files
+- read_document
+- create_excel
+- remember
+- search_memory
+- list_memories
+
+TASK TYPES:
+- answer
+- research
+- computer
+- python
+- file
+- memory
+- multi_step
+
+IMPORTANT TOOL ARGUMENT RULES:
+
+For run_powershell, you MUST provide the exact command
+inside the "arguments" object.
+
+Only select commands that are safe read-only operations.
+
+Examples of approved commands:
+
+Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
+
+Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory, NumberOfLogicalProcessors
+
+Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+
+Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
+
+For search_web, provide:
+{{"query": "...", "max_results": 5}}
+
+For run_python, provide:
+{{"code": "..."}}
+
+RULES:
+
+1. Identify the user's actual objective.
+2. Select only necessary tools.
+3. Use search_web when current internet information is required.
+4. Use read_webpage when a search result needs inspection.
+5. Use run_powershell for safe Windows information queries.
+6. Use run_python for Python computation.
+7. Use file tools for file/document tasks.
+8. Use multi_step when multiple operations are necessary.
+9. Never invent tools.
+10. Never execute anything yourself.
+11. Do not select destructive commands.
+12. Do not select arbitrary PowerShell commands.
+13. Always provide arguments for selected tools.
+14. Computer actions must be verified.
+15. Return ONLY valid JSON.
+16. Do not use markdown code fences.
+
+JSON FORMAT:
+
+{{
+  "task_type": "answer|research|computer|python|file|memory|multi_step",
+  "objective": "short description",
+  "tools": [
+    {{
+      "name": "tool_name",
+      "purpose": "why this tool is needed",
+      "arguments": {{}}
+    }}
+  ],
+  "requires_verification": true,
+  "risk": "low|medium|high"
+}}
+"""
+
+    def plan(self, request: str) -> dict:
+
+        result = self.router.compare(
+            self.build_prompt(request)
+        )
+
+        final = result.get("final", "").strip()
+
+        try:
+
+            start = final.find("{")
+            end = final.rfind("}")
+
+            if start == -1 or end == -1:
+                raise ValueError("No JSON object found.")
+
+            data = json.loads(
+                final[start:end + 1]
+            )
+
+            if not isinstance(data, dict):
+                raise ValueError(
+                    "Planner response is not an object."
+                )
+
+            data.setdefault("tools", [])
+            data.setdefault(
+                "requires_verification",
+                True
+            )
+            data.setdefault("risk", "medium")
+
+            for tool in data.get("tools", []):
+
+                if not isinstance(tool, dict):
+                    continue
+
+                tool.setdefault(
+                    "arguments",
+                    {}
+                )
+
+            return data
+
+        except Exception as e:
+
+            return {
+                "task_type": "answer",
+                "objective": request,
+                "tools": [],
+                "requires_verification": True,
+                "risk": "low",
+                "planner_error": str(e)
+            }

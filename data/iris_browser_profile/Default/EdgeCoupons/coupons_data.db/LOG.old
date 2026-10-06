@@ -1,0 +1,6 @@
+2026/10/06-03:35:45.071 56fc Reusing MANIFEST C:\Users\adars\IRIS\data\iris_browser_profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/10/06-03:35:45.072 56fc Recovering log #26
+2026/10/06-03:35:45.073 56fc Reusing old log C:\Users\adars\IRIS\data\iris_browser_profile\Default\EdgeCoupons/coupons_data.db/000026.log 
+2026/10/06-03:35:45.267 5554 Level-0 table #30: started
+2026/10/06-03:35:45.273 5554 Level-0 table #30: 683444 bytes OK
+2026/10/06-03:35:45.276 5554 Delete type=0 #26

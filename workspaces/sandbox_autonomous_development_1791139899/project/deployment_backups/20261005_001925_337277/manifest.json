@@ -1,0 +1,15 @@
+{
+  "created": "2026-10-05T00:19:25.337635",
+  "files": [
+    {
+      "path": "core/planner.py",
+      "existed": true,
+      "backup": "C:\\Users\\adars\\IRIS\\deployment_backups\\20261005_001925_337277\\core\\planner.py"
+    },
+    {
+      "path": "tools/manager.py",
+      "existed": true,
+      "backup": "C:\\Users\\adars\\IRIS\\deployment_backups\\20261005_001925_337277\\tools\\manager.py"
+    }
+  ]
+}

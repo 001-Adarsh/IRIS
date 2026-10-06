@@ -1,0 +1,398 @@
+﻿from core.router import AIRouter
+from core.researcher import WebResearcher
+from core.synthesizer import AISynthesizer
+from core.planner import IRISPlanner
+from core.executor import IRISExecutor
+from tools.manager import ToolManager
+
+
+class IRISAgent:
+
+    def __init__(self):
+        self.router = AIRouter()
+        self.tools = ToolManager()
+        self.researcher = WebResearcher()
+        self.synthesizer = AISynthesizer()
+
+        self.planner = IRISPlanner()
+        self.executor = IRISExecutor(self.tools)
+
+    def run(self, prompt: str):
+
+        p = prompt.lower().strip()
+
+        if p in ["exit", "quit", "/bye", "/exit", "/quit"]:
+            return "__IRIS_EXIT__"
+
+        # -------------------------------------------------
+        # Explicit research requests
+        # -------------------------------------------------
+
+        research_triggers = [
+            "research the internet",
+            "research internet",
+            "research web",
+            "research online",
+            "research",
+            "find out about",
+            "find out"
+        ]
+
+        if any(p.startswith(x) for x in research_triggers):
+
+            query = prompt
+
+            phrases = [
+                "research the internet for",
+                "research the internet",
+                "research internet for",
+                "research internet",
+                "research web for",
+                "research web",
+                "research online for",
+                "research online",
+                "research for",
+                "research",
+                "find out about",
+                "find out"
+            ]
+
+            for phrase in phrases:
+                if query.lower().startswith(phrase):
+                    query = query[len(phrase):].strip()
+                    break
+
+            if not query:
+                return "Please provide a research topic."
+
+            research = self.researcher.research(
+                query,
+                max_sources=3
+            )
+
+            if not research.get("evidence"):
+                return "IRIS could not find usable evidence."
+
+            print(
+                "\nIRIS AI Synthesizer: "
+                "Creating final answer..."
+            )
+
+            return self.synthesizer.synthesize(
+                query,
+                research
+            )
+
+        # -------------------------------------------------
+        # Explicit web search
+        # -------------------------------------------------
+
+        search_triggers = [
+            "search the internet",
+            "search internet",
+            "search in internet",
+            "search online",
+            "search web"
+        ]
+
+        if any(p.startswith(x) for x in search_triggers):
+
+            query = prompt
+
+            phrases = [
+                "search the internet for",
+                "search the internet",
+                "search internet for",
+                "search internet",
+                "search in internet for",
+                "search in internet",
+                "search online for",
+                "search online",
+                "search web for",
+                "search web"
+            ]
+
+            for phrase in phrases:
+                if query.lower().startswith(phrase):
+                    query = query[len(phrase):].strip()
+                    break
+
+            if not query:
+                return "Please provide a search query."
+
+            results = self.tools.execute(
+                "search_web",
+                query=query,
+                max_results=5
+            )
+
+            if not results:
+                return "No web results found."
+
+            output = ["=== IRIS WEB SEARCH ==="]
+
+            for i, result in enumerate(results, 1):
+                output.append(
+                    f"\n[{i}] {result['title']}\n"
+                    f"URL: {result['url']}\n"
+                    f"INFO: {result['snippet']}"
+                )
+
+            return "\n".join(output)
+
+        # -------------------------------------------------
+        # Memory
+        # -------------------------------------------------
+
+        if p.startswith("remember ") or p.startswith("remember:"):
+
+            memory = prompt
+
+            if memory.lower().startswith("remember:"):
+                memory = memory[len("remember:"):].strip()
+
+            elif memory.lower().startswith("remember "):
+                memory = memory[len("remember "):].strip()
+
+            if memory.lower().startswith("that "):
+                memory = memory[5:].strip()
+
+            if not memory:
+                return "Please provide something for me to remember."
+
+            return self.tools.execute(
+                "remember",
+                content=memory
+            )
+
+        if (
+            p.startswith("what do you remember")
+            or p.startswith("search memory")
+            or p.startswith("recall ")
+        ):
+
+            query = prompt
+
+            phrases = [
+                "what do you remember about",
+                "what do you remember",
+                "search memory",
+                "recall"
+            ]
+
+            for phrase in phrases:
+                if query.lower().startswith(phrase):
+                    query = query[len(phrase):].strip()
+                    break
+
+            query = query.strip(" ?!.,:;")
+
+            if not query:
+                return "Please tell me what you want me to remember."
+
+            results = self.tools.execute(
+                "search_memory",
+                query=query
+            )
+
+            if not results:
+                return "I don't have any matching memories."
+
+            return "\n".join(
+                f"- {item[1]}"
+                for item in results
+            )
+
+        if p in [
+            "list memories",
+            "show memories",
+            "show my memories"
+        ]:
+
+            results = self.tools.execute(
+                "list_memories"
+            )
+
+            if not results:
+                return "I don't have any saved memories."
+
+            return "\n".join(
+                f"- {item[1]}"
+                for item in results
+            )
+
+        # -------------------------------------------------
+        # Automatic memory
+        # -------------------------------------------------
+
+        automatic_memory_triggers = [
+            "my name is ",
+            "i am ",
+            "i'm ",
+            "i work ",
+            "i work at ",
+            "i live ",
+            "i prefer ",
+            "i like ",
+            "i dislike ",
+            "i'm learning ",
+            "i am learning ",
+            "my goal is ",
+            "my laptop is "
+        ]
+
+        memory_text = prompt.strip()
+
+        if any(
+            memory_text.lower().startswith(trigger)
+            for trigger in automatic_memory_triggers
+        ):
+
+            result = self.tools.execute(
+                "remember",
+                content=memory_text
+            )
+
+            return (
+                "I'll remember that.\n"
+                f"{result}"
+            )
+
+        # -------------------------------------------------
+        # Existing explicit computer commands
+        # -------------------------------------------------
+
+        if (
+            p.startswith("run powershell")
+            or p.startswith("powershell")
+            or p.startswith("check my computer")
+        ):
+
+            command = prompt
+
+            phrases = [
+                "run powershell",
+                "powershell",
+                "check my computer"
+            ]
+
+            for phrase in phrases:
+                if command.lower().startswith(phrase):
+                    command = command[len(phrase):].strip()
+                    break
+
+            if not command:
+                return "Please provide a PowerShell command."
+
+            return self.tools.execute(
+                "run_powershell",
+                command=command
+            )
+
+        if (
+            p.startswith("run python")
+            or p.startswith("python")
+        ):
+
+            code = prompt
+
+            phrases = [
+                "run python",
+                "python"
+            ]
+
+            for phrase in phrases:
+                if code.lower().startswith(phrase):
+                    code = code[len(phrase):].strip()
+                    break
+
+            if not code:
+                return "Please provide Python code."
+
+            return self.tools.execute(
+                "run_python",
+                code=code
+            )
+
+        # -------------------------------------------------
+        # Planner-driven tasks
+        # -------------------------------------------------
+
+        print("\nIRIS Planner: Understanding task...")
+
+        plan = self.planner.plan(prompt)
+
+        print(
+            f"IRIS Planner selected task: "
+            f"{plan.get('task_type', 'unknown')}"
+        )
+
+        selected_tools = plan.get("tools", [])
+
+        if selected_tools:
+
+            print("IRIS Planner selected tools:")
+
+            for tool in selected_tools:
+                print(
+                    f"- {tool.get('name')}: "
+                    f"{tool.get('purpose')}"
+                )
+
+            # -------------------------------------------------
+            # Initial automatic argument generation
+            # -------------------------------------------------
+
+            tool_arguments = {}
+
+            for tool in selected_tools:
+
+                name = tool.get("name")
+
+                if name == "run_powershell":
+
+                    # Use a safe, approved command for
+                    # basic computer-information requests.
+                    tool_arguments[name] = {
+                        "command": "systeminfo"
+                    }
+
+                elif name == "search_web":
+
+                    tool_arguments[name] = {
+                        "query": prompt,
+                        "max_results": 5
+                    }
+
+            execution = self.executor.execute_plan(
+                plan,
+                tool_arguments
+            )
+
+            if execution.get("success"):
+
+                print("\nIRIS Executor: Task executed.")
+
+                output = []
+
+                for result in execution.get(
+                    "results",
+                    []
+                ):
+
+                    if result.get("success"):
+
+                        output.append(
+                            f"=== {result['tool']} RESULT ===\n"
+                            f"{result['result']}"
+                        )
+
+                if output:
+
+                    return "\n\n".join(output)
+
+        # -------------------------------------------------
+        # Final AI Council fallback
+        # -------------------------------------------------
+
+        return self.router.route(prompt)

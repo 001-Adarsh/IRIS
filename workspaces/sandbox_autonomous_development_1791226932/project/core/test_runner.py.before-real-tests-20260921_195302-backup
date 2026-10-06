@@ -1,0 +1,32 @@
+from pathlib import Path
+import subprocess
+import sys
+
+class IRISTestRunner:
+    def __init__(self, project_path):
+        self.project_path = Path(project_path)
+
+    def compile_python(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "compileall", "-q", str(self.project_path)],
+            cwd=str(self.project_path),
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+        return {
+            "passed": result.returncode == 0,
+            "type": "compile",
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode
+        }
+
+    def run(self):
+        result = self.compile_python()
+
+        return {
+            "passed": result["passed"],
+            "tests": [result]
+        }

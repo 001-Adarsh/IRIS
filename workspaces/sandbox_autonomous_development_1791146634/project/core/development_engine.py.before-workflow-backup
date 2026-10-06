@@ -1,0 +1,51 @@
+from pathlib import Path
+from core.sandbox import IRISSandbox
+from core.test_runner import IRISTestRunner
+from core.upgrade_manager import IRISUpgradeManager
+from core.approval_gate import IRISApprovalGate
+
+class IRISDevelopmentEngine:
+
+    def __init__(self, project_root=None):
+        self.project_root = Path(
+            project_root or Path(__file__).resolve().parent.parent
+        )
+
+        self.sandbox = IRISSandbox()
+        self.upgrades = IRISUpgradeManager(self.project_root)
+        self.approval = IRISApprovalGate()
+
+    def create_development_workspace(self, name="development"):
+        snapshot = self.sandbox.create_project_snapshot(name)
+
+        print("\n=== IRIS DEVELOPMENT SANDBOX ===")
+        print(f"Workspace: {snapshot['workspace']}")
+        print(f"Project:   {snapshot['project']}")
+        print("Production modified: NO")
+
+        return snapshot
+
+    def test_workspace(self, project_path):
+        runner = IRISTestRunner(project_path)
+        result = runner.run()
+
+        print("\n=== IRIS SANDBOX TEST ===")
+        print(f"Passed: {result['passed']}")
+
+        return result
+
+    def propose_upgrade(self, objective, workspace, changes, test_results):
+        return self.upgrades.create_proposal(
+            objective=objective,
+            workspace=workspace,
+            changes=changes,
+            test_results=test_results
+        )
+
+    def development_status(self):
+        return {
+            "sandbox_enabled": True,
+            "autonomous_development": True,
+            "autonomous_testing": True,
+            "production_deployment": "approval_required"
+        }

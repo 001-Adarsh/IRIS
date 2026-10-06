@@ -1,0 +1,6 @@
+tag is found, fallbacks to extracting any Python code block
+        formatted as ```python ... ``` and assigns it to the target file.
+        """
+        files = {}
+        
+        # Standard pattern matching for <<<FILE: path>>> ...

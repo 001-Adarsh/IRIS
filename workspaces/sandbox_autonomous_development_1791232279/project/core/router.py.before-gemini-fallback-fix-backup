@@ -1,0 +1,266 @@
+﻿from providers.demo_provider import DemoProvider
+from providers.openai_provider import OpenAIProvider
+from providers.ollama_provider import OllamaProvider
+from providers.gemini_provider import GeminiProvider
+
+
+class AIRouter:
+
+    def __init__(self):
+
+        self.providers = {
+            "ollama": OllamaProvider(),
+            "gemini": GeminiProvider(),
+            "openai": OpenAIProvider(),
+            "demo": DemoProvider()
+        }
+
+
+    def get_available_providers(self):
+
+        return {
+            name: provider
+            for name, provider in self.providers.items()
+            if provider.available
+            and name != "demo"
+        }
+
+
+    def show_status(self):
+
+        print("\n=== IRIS AI COUNCIL ===")
+
+        for name, provider in self.providers.items():
+
+            if name == "demo":
+                continue
+
+            status = (
+                "AVAILABLE"
+                if provider.available
+                else "NOT CONFIGURED"
+            )
+
+            print(
+                f"{name.upper():10} : {status}"
+            )
+
+
+    def compare(
+        self,
+        prompt: str
+    ):
+
+        available = (
+            self.get_available_providers()
+        )
+
+        if not available:
+
+            return {
+                "answers": {},
+                "final": self.providers[
+                    "demo"
+                ].generate(prompt),
+                "providers": []
+            }
+
+
+        answers = {}
+
+        print(
+            "\n=== IRIS AI COUNCIL ==="
+        )
+
+
+        for name, provider in available.items():
+
+            print(
+                f"\nIRIS querying: "
+                f"{name.upper()}"
+            )
+
+            try:
+
+                answer = provider.generate(
+                    prompt
+                )
+
+                if answer and not answer.startswith(
+                    (
+                        "Ollama is not available.",
+                        "Ollama timed out",
+                        "Ollama connection error",
+                        "Ollama error:",
+                        "Gemini error:",
+                        "Gemini API key is not configured.",
+                        "OpenAI is not configured yet."
+                    )
+                ):
+
+                    answers[name] = answer
+
+                else:
+
+                    print(
+                        f"IRIS: {name} "
+                        "returned an unusable response."
+                    )
+
+            except Exception as e:
+
+                print(
+                    f"IRIS: {name} failed: "
+                    f"{e}"
+                )
+
+
+        if not answers:
+
+            return {
+                "answers": {},
+                "final": self.providers[
+                    "demo"
+                ].generate(prompt),
+                "providers": []
+            }
+
+
+        final = self.synthesize(
+            prompt,
+            answers
+        )
+
+
+        return {
+            "answers": answers,
+            "final": final,
+            "providers": list(
+                answers.keys()
+            )
+        }
+
+
+    def synthesize(
+        self,
+        prompt: str,
+        answers: dict
+    ):
+
+        # Prefer Gemini as the synthesis
+        # model because it is currently
+        # configured and available.
+
+        synthesizer = (
+            self.providers["gemini"]
+        )
+
+        if synthesizer.available:
+
+            comparison = "\n\n".join(
+                f"--- {name.upper()} RESPONSE ---\n"
+                f"{answer}"
+                for name, answer
+                in answers.items()
+            )
+
+
+            synthesis_prompt = f"""
+You are the final synthesis layer of IRIS,
+a personal hybrid AI assistant.
+
+USER REQUEST:
+{prompt}
+
+RESPONSES FROM AVAILABLE AI MODELS:
+
+{comparison}
+
+Your task is to produce the final answer.
+
+Rules:
+
+1. Compare the supplied responses carefully.
+2. Preserve useful information from each response.
+3. Do not blindly trust one model.
+4. If the models disagree, identify the disagreement.
+5. Do not invent facts that are absent from the responses.
+6. Do not claim that a model performed an action
+   that is not demonstrated by the supplied responses.
+7. Prefer precise, practical and technically correct
+   information.
+8. Clearly distinguish facts, assumptions and uncertainty.
+9. If the question requires current information,
+   say when the supplied responses are insufficient
+   to establish it.
+10. Do not reveal chain-of-thought or hidden reasoning.
+11. Give the user a useful final answer directly.
+
+Return only the final answer.
+"""
+
+
+            try:
+
+                result = synthesizer.generate(
+                    synthesis_prompt
+                )
+
+                if result and not result.startswith(
+                    "Gemini error:"
+                ):
+
+                    return result.strip()
+
+            except Exception as e:
+
+                print(
+                    f"IRIS synthesis warning: {e}"
+                )
+
+
+        # Safe fallback:
+        # return the first successful
+        # provider response.
+
+        return next(
+            iter(answers.values())
+        )
+
+
+    def route(
+        self,
+        prompt: str
+    ) -> str:
+
+        result = self.compare(
+            prompt
+        )
+
+
+        print(
+            "\n=== IRIS PARTICIPATING MODELS ==="
+        )
+
+        if result["providers"]:
+
+            for provider in result[
+                "providers"
+            ]:
+
+                print(
+                    f"- {provider}"
+                )
+
+        else:
+
+            print(
+                "- demo fallback"
+            )
+
+
+        print(
+            "\n=== IRIS FINAL ANSWER ==="
+        )
+
+        return result["final"]

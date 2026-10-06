@@ -1,0 +1,17 @@
+{
+  "task_id": "TASK-20261005_021706_925523",
+  "objective": "of richest person of india",
+  "status": "completed",
+  "step": 1,
+  "attempts": 1,
+  "last_tool": null,
+  "last_result": null,
+  "verification": {
+    "verified": true,
+    "reason": "Research produced verifiable source and evidence blocks."
+  },
+  "next_action": null,
+  "history": [],
+  "created_at": "2026-10-05T02:17:06.925563",
+  "updated_at": "2026-10-05T02:17:11.458395"
+}

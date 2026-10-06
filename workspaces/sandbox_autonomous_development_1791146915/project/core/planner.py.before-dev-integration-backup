@@ -1,0 +1,184 @@
+﻿import json
+from core.router import AIRouter
+
+
+class IRISPlanner:
+
+    def __init__(self):
+        self.router = AIRouter()
+
+    def build_prompt(
+        self,
+        request: str,
+        previous_attempts: list | None = None
+    ):
+
+        previous_attempts = previous_attempts or []
+
+        history = ""
+
+        if previous_attempts:
+            history = "\nPREVIOUS ATTEMPTS:\n"
+
+            for attempt in previous_attempts:
+                history += f"""
+Step: {attempt.get('step')}
+Tool: {attempt.get('tool')}
+Arguments: {attempt.get('arguments')}
+Result: {attempt.get('result')}
+Verification: {attempt.get('verification')}
+"""
+
+        return f"""
+You are the task planner for IRIS, a personal AI computer assistant.
+
+USER REQUEST:
+{request}
+
+{history}
+
+AVAILABLE TOOLS:
+- search_web
+- read_webpage
+- run_powershell
+- run_python
+- create_file
+- read_file
+- list_files
+- read_document
+- create_excel
+- remember
+- search_memory
+- list_memories
+
+TASK TYPES:
+- answer
+- research
+- computer
+- python
+- file
+- memory
+- multi_step
+
+PLANNING RULES:
+
+1. Identify the user's actual objective.
+2. Select only tools necessary for the next action.
+3. If a previous attempt failed, DO NOT blindly repeat it.
+4. Use the previous result and verification failure to choose another approach.
+5. For current internet information, use search_web.
+6. For Windows information, use safe run_powershell commands.
+7. For Python computation, use run_python.
+8. For files, use the file tools.
+9. Never invent tools.
+10. Never execute anything yourself.
+11. Never select destructive commands.
+12. Never select arbitrary PowerShell commands.
+13. Always provide exact tool arguments.
+14. Computer actions require verification.
+15. Keep the next action focused on completing the user's objective.
+16. Return ONLY valid JSON.
+17. Do not use markdown code fences.
+
+APPROVED POWERSHELL EXAMPLES:
+
+Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory
+
+Get-CimInstance Win32_ComputerSystem | Select-Object TotalPhysicalMemory, NumberOfLogicalProcessors
+
+Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+
+Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture
+
+JSON FORMAT:
+
+{{
+  "task_type": "answer|research|computer|python|file|memory|multi_step",
+  "objective": "short description",
+  "tools": [
+    {{
+      "name": "tool_name",
+      "purpose": "why this tool is needed",
+      "arguments": {{}}
+    }}
+  ],
+  "requires_verification": true,
+  "risk": "low|medium|high"
+}}
+"""
+
+    def plan(
+        self,
+        request: str,
+        previous_attempts: list | None = None
+    ) -> dict:
+
+        result = self.router.compare(
+            self.build_prompt(
+                request,
+                previous_attempts
+            )
+        )
+
+        final = result.get(
+            "final",
+            ""
+        ).strip()
+
+        try:
+
+            start = final.find("{")
+            end = final.rfind("}")
+
+            if start == -1 or end == -1:
+                raise ValueError(
+                    "No JSON object found."
+                )
+
+            data = json.loads(
+                final[start:end + 1]
+            )
+
+            if not isinstance(data, dict):
+                raise ValueError(
+                    "Planner response is not an object."
+                )
+
+            data.setdefault(
+                "tools",
+                []
+            )
+
+            data.setdefault(
+                "requires_verification",
+                True
+            )
+
+            data.setdefault(
+                "risk",
+                "medium"
+            )
+
+            for tool in data.get(
+                "tools",
+                []
+            ):
+
+                if isinstance(tool, dict):
+                    tool.setdefault(
+                        "arguments",
+                        {}
+                    )
+
+            return data
+
+        except Exception as e:
+
+            return {
+                "task_type": "answer",
+                "objective": request,
+                "tools": [],
+                "requires_verification": True,
+                "risk": "low",
+                "planner_error": str(e)
+            }

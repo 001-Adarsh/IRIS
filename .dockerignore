@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.git/
+sandbox/
+upgrade_proposals/
+data/last_session.txt

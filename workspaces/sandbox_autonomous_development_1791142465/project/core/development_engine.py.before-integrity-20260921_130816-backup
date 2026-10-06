@@ -1,0 +1,235 @@
+﻿from pathlib import Path
+import json
+
+from core.sandbox import IRISSandbox
+from core.test_runner import IRISTestRunner
+from core.upgrade_manager import IRISUpgradeManager
+from core.approval_gate import IRISApprovalGate
+from core.deployment_manager import IRISDeploymentManager
+
+
+class IRISDevelopmentEngine:
+
+    def __init__(self, project_root=None):
+        self.project_root = Path(
+            project_root or Path(__file__).resolve().parent.parent
+        )
+
+        self.sandbox = IRISSandbox()
+        self.upgrades = IRISUpgradeManager(self.project_root)
+        self.approval = IRISApprovalGate()
+        self.deployment = IRISDeploymentManager(
+            self.project_root
+        )
+
+    def create_development_workspace(self, name="development"):
+        snapshot = self.sandbox.create_project_snapshot(name)
+
+        print("\n=== IRIS DEVELOPMENT SANDBOX ===")
+        print(f"Workspace: {snapshot['workspace']}")
+        print(f"Project:   {snapshot['project']}")
+        print("Production modified: NO")
+
+        return snapshot
+
+    def test_workspace(self, project_path):
+        runner = IRISTestRunner(project_path)
+        result = runner.run()
+
+        print("\n=== IRIS SANDBOX TEST ===")
+        print(f"Passed: {result['passed']}")
+
+        return result
+
+    def propose_upgrade(
+        self,
+        objective,
+        workspace,
+        changes,
+        test_results
+    ):
+        return self.upgrades.create_proposal(
+            objective=objective,
+            workspace=workspace,
+            changes=changes,
+            test_results=test_results
+        )
+
+    def load_proposal(self, proposal_file):
+        path = Path(proposal_file).resolve()
+
+        try:
+            path.relative_to(
+                (self.project_root / "upgrade_proposals").resolve()
+            )
+        except ValueError:
+            raise PermissionError(
+                "Proposal must be inside upgrade_proposals."
+            )
+
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Proposal not found: {proposal_file}"
+            )
+
+        return json.loads(
+            path.read_text(encoding="utf-8")
+        )
+
+    def approve_and_deploy(self, proposal_file):
+
+        proposal_path = Path(
+            proposal_file
+        ).resolve()
+
+        proposal = self.load_proposal(
+            proposal_path
+        )
+
+        proposal["proposal_file"] = str(
+            proposal_path
+        )
+
+        approved = self.approval.request_approval(
+            proposal
+        )
+
+        if not approved:
+
+            return {
+                "status": "cancelled",
+                "production_modified": False
+            }
+
+        print("\n=== IRIS DEPLOYMENT ===")
+        print("Approval accepted.")
+        print("Creating production backup...")
+
+        deployment_result = self.deployment.deploy(
+            proposal
+        )
+
+        # ----------------------------------------------------
+        # DEPLOYMENT COPY FAILED
+        # ----------------------------------------------------
+
+        if deployment_result.get("status") != "deployed":
+
+            proposal["status"] = deployment_result.get(
+                "status",
+                "failed"
+            )
+
+            proposal["production_modified"] = (
+                deployment_result.get(
+                    "production_modified",
+                    False
+                )
+            )
+
+            proposal["deployment"] = deployment_result
+
+            proposal_path.write_text(
+                json.dumps(
+                    proposal,
+                    indent=2
+                ),
+                encoding="utf-8"
+            )
+
+            return deployment_result
+
+        print("\nDeployment copy completed.")
+        print("Running post-deployment verification...")
+
+        # ----------------------------------------------------
+        # POST-DEPLOYMENT VERIFICATION
+        # ----------------------------------------------------
+
+        verification = (
+            self.deployment.verify_deployment(
+                proposal,
+                deployment_result
+            )
+        )
+
+        deployment_result["verification"] = verification
+
+        if verification.get("passed"):
+
+            print("Post-deployment verification: PASSED")
+
+            proposal["status"] = "deployed"
+            proposal["production_modified"] = True
+            proposal["deployment"] = deployment_result
+
+            proposal_path.write_text(
+                json.dumps(
+                    proposal,
+                    indent=2
+                ),
+                encoding="utf-8"
+            )
+
+            return deployment_result
+
+        # ----------------------------------------------------
+        # VERIFICATION FAILED → AUTOMATIC ROLLBACK
+        # ----------------------------------------------------
+
+        print("Post-deployment verification: FAILED")
+        print("Starting automatic rollback...")
+
+        backup_directory = deployment_result.get(
+            "backup_directory"
+        )
+
+        rollback_result = self.deployment.rollback(
+            backup_directory
+        )
+
+        deployment_result["rollback"] = rollback_result
+
+        if rollback_result.get("status") == "rolled_back":
+
+            print("Automatic rollback: PASSED")
+
+            deployment_result["status"] = "rolled_back"
+            deployment_result["production_modified"] = False
+
+            proposal["status"] = "rolled_back"
+            proposal["production_modified"] = False
+            proposal["deployment"] = deployment_result
+
+        else:
+
+            print("Automatic rollback: FAILED")
+
+            deployment_result["status"] = "rollback_failed"
+            deployment_result["production_modified"] = True
+
+            proposal["status"] = "rollback_failed"
+            proposal["production_modified"] = True
+            proposal["deployment"] = deployment_result
+
+        proposal_path.write_text(
+            json.dumps(
+                proposal,
+                indent=2
+            ),
+            encoding="utf-8"
+        )
+
+        return deployment_result
+
+    def development_status(self):
+        return {
+            "sandbox_enabled": True,
+            "autonomous_development": True,
+            "autonomous_testing": True,
+            "production_deployment": "explicit_APPROVE_required",
+            "production_backup": True,
+            "post_deployment_verification": True,
+            "automatic_rollback_on_verification_failure": True,
+            "rollback_support": "backup_created"
+        }

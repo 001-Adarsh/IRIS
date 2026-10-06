@@ -1,0 +1,36 @@
+from pathlib import Path
+import json
+from datetime import datetime
+
+class IRISUpgradeManager:
+    def __init__(self, project_root):
+        self.project_root = Path(project_root)
+        self.upgrade_dir = self.project_root / "upgrade_proposals"
+        self.upgrade_dir.mkdir(parents=True, exist_ok=True)
+
+    def create_proposal(self, objective, workspace, changes, test_results):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        proposal = {
+            "created": datetime.now().isoformat(),
+            "objective": objective,
+            "workspace": str(workspace),
+            "changes": changes,
+            "test_results": test_results,
+            "production_modified": False,
+            "approval_required": True,
+            "status": "awaiting_approval"
+        }
+
+        path = self.upgrade_dir / f"proposal_{timestamp}.json"
+
+        path.write_text(
+            json.dumps(proposal, indent=2),
+            encoding="utf-8"
+        )
+
+        return {
+            "proposal_file": str(path),
+            "status": "awaiting_approval",
+            "production_modified": False
+        }

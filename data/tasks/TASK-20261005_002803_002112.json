@@ -1,0 +1,14 @@
+{
+  "task_id": "TASK-20261005_002803_002112",
+  "objective": "tell me best IPO under 25K which give me max profit",
+  "status": "planning",
+  "step": 1,
+  "attempts": 1,
+  "last_tool": null,
+  "last_result": null,
+  "verification": null,
+  "next_action": null,
+  "history": [],
+  "created_at": "2026-10-05T00:28:03.002193",
+  "updated_at": "2026-10-05T00:28:03.013630"
+}

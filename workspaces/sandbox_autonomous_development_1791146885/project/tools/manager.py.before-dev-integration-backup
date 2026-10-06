@@ -1,0 +1,54 @@
+from core.memory import Memory
+
+from tools.excel_tool import create_excel
+from tools.file_tool import create_file, read_file, list_files
+from tools.web_tool import search_web
+from tools.web_reader import read_webpage
+from tools.powershell_tool import run_powershell
+from tools.python_tool import run_python
+from tools.document_tool import read_document
+
+from core.sandbox_tools import (
+    sandbox_list_files,
+    sandbox_read_file,
+    sandbox_write_file,
+    sandbox_create_file,
+    sandbox_diff
+)
+
+
+class ToolManager:
+
+    def __init__(self):
+        self.memory = Memory()
+
+        self.tools = {
+            "create_excel": create_excel,
+            "create_file": create_file,
+            "read_file": read_file,
+            "list_files": list_files,
+            "search_web": search_web,
+            "read_webpage": read_webpage,
+            "run_powershell": run_powershell,
+            "run_python": run_python,
+            "read_document": read_document,
+
+            "remember": self.memory.save,
+            "search_memory": self.memory.search,
+            "list_memories": self.memory.list_memories,
+
+            "sandbox_list_files": sandbox_list_files,
+            "sandbox_read_file": sandbox_read_file,
+            "sandbox_write_file": sandbox_write_file,
+            "sandbox_create_file": sandbox_create_file,
+            "sandbox_diff": sandbox_diff
+        }
+
+    def list_tools(self):
+        return list(self.tools.keys())
+
+    def execute(self, tool_name, **kwargs):
+        if tool_name not in self.tools:
+            return f"Tool '{tool_name}' is not available."
+
+        return self.tools[tool_name](**kwargs)

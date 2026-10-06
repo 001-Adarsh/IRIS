@@ -1,0 +1,90 @@
+﻿class IRISExecutor:
+
+    SAFE_TOOLS = {
+        "search_web",
+        "read_webpage",
+        "run_powershell",
+        "run_python",
+        "create_file",
+        "read_file",
+        "list_files",
+        "read_document",
+        "create_excel",
+        "remember",
+        "search_memory",
+        "list_memories"
+    }
+
+    def __init__(self, tool_manager):
+        self.tools = tool_manager
+
+    def execute_plan(self, plan: dict, tool_arguments: dict | None = None):
+
+        task_type = plan.get("task_type", "answer")
+        selected_tools = plan.get("tools", [])
+
+        if not selected_tools:
+            return {
+                "success": False,
+                "results": [],
+                "message": "No tools were selected by the planner."
+            }
+
+        tool_arguments = tool_arguments or {}
+        results = []
+
+        for tool in selected_tools:
+
+            tool_name = tool.get("name")
+
+            if not tool_name:
+                continue
+
+            if tool_name not in self.SAFE_TOOLS:
+                results.append({
+                    "tool": tool_name,
+                    "success": False,
+                    "result": "Tool is not permitted for autonomous execution."
+                })
+                continue
+
+            if tool_name not in self.tools.list_tools():
+                results.append({
+                    "tool": tool_name,
+                    "success": False,
+                    "result": "Tool is not available."
+                })
+                continue
+
+            kwargs = tool_arguments.get(tool_name, {})
+
+            try:
+                result = self.tools.execute(
+                    tool_name,
+                    **kwargs
+                )
+
+                results.append({
+                    "tool": tool_name,
+                    "success": True,
+                    "result": result
+                })
+
+            except Exception as e:
+
+                results.append({
+                    "tool": tool_name,
+                    "success": False,
+                    "result": f"{type(e).__name__}: {e}"
+                })
+
+        success = any(
+            item["success"]
+            for item in results
+        )
+
+        return {
+            "success": success,
+            "task_type": task_type,
+            "results": results
+        }

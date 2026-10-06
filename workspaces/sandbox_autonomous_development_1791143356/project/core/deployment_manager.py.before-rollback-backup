@@ -1,0 +1,158 @@
+﻿from pathlib import Path
+import shutil
+from datetime import datetime
+
+
+class IRISDeploymentManager:
+
+    BLOCKED_NAMES = {
+        ".env",
+        ".env.local",
+        ".env.production"
+    }
+
+    BLOCKED_SUFFIXES = {
+        ".db",
+        ".sqlite",
+        ".sqlite3"
+    }
+
+    def __init__(self, project_root):
+        self.project_root = Path(project_root).resolve()
+        self.backup_root = self.project_root / "deployment_backups"
+        self.backup_root.mkdir(parents=True, exist_ok=True)
+
+    def _safe_relative_path(self, relative_path):
+        relative = Path(relative_path)
+
+        if relative.is_absolute():
+            raise PermissionError(
+                "Deployment path must be relative."
+            )
+
+        if any(part == ".." for part in relative.parts):
+            raise PermissionError(
+                "Deployment path cannot contain '..'."
+            )
+
+        target = (self.project_root / relative).resolve()
+
+        try:
+            target.relative_to(self.project_root)
+        except ValueError:
+            raise PermissionError(
+                "Deployment path escaped the IRIS project."
+            )
+
+        if target.name.startswith(".env"):
+            raise PermissionError(
+                "Deployment cannot modify environment files."
+            )
+
+        if target.suffix.lower() in self.BLOCKED_SUFFIXES:
+            raise PermissionError(
+                "Deployment cannot modify database files."
+            )
+
+        return target
+
+    def _safe_source_path(self, project_path, relative_path):
+        root = Path(project_path).resolve()
+        source = (root / relative_path).resolve()
+
+        try:
+            source.relative_to(root)
+        except ValueError:
+            raise PermissionError(
+                "Sandbox source escaped the sandbox project."
+            )
+
+        if not source.is_file():
+            raise FileNotFoundError(
+                f"Sandbox file does not exist: {relative_path}"
+            )
+
+        return source
+
+    def deploy(self, proposal):
+        if proposal.get("status") != "awaiting_approval":
+            raise PermissionError(
+                "Only proposals awaiting approval can be deployed."
+            )
+
+        if not proposal.get("approval_required", True):
+            raise PermissionError(
+                "Deployment requires an explicit approval record."
+            )
+
+        if proposal.get("production_modified", False):
+            raise PermissionError(
+                "Proposal already indicates production was modified."
+            )
+
+        project_path = Path(
+            proposal.get("workspace", "")
+        ).resolve() / "project"
+
+        if not project_path.is_dir():
+            raise FileNotFoundError(
+                "Sandbox project does not exist."
+            )
+
+        changes = proposal.get("changes", [])
+
+        if not changes:
+            raise ValueError(
+                "Proposal contains no changes."
+            )
+
+        timestamp = datetime.now().strftime(
+            "%Y%m%d_%H%M%S"
+        )
+
+        backup_dir = self.backup_root / timestamp
+        backup_dir.mkdir(parents=True, exist_ok=True)
+
+        deployed = []
+        backed_up = []
+
+        for relative_path in changes:
+            target = self._safe_relative_path(relative_path)
+            source = self._safe_source_path(
+                project_path,
+                relative_path
+            )
+
+            if target.exists():
+                backup_target = backup_dir / relative_path
+                backup_target.parent.mkdir(
+                    parents=True,
+                    exist_ok=True
+                )
+
+                shutil.copy2(
+                    target,
+                    backup_target
+                )
+
+                backed_up.append(relative_path)
+
+            target.parent.mkdir(
+                parents=True,
+                exist_ok=True
+            )
+
+            shutil.copy2(
+                source,
+                target
+            )
+
+            deployed.append(relative_path)
+
+        return {
+            "status": "deployed",
+            "production_modified": True,
+            "backup_directory": str(backup_dir),
+            "deployed": deployed,
+            "backed_up": backed_up
+        }

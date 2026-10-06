@@ -1,0 +1,35 @@
+from providers.demo_provider import DemoProvider
+from providers.openai_provider import OpenAIProvider
+from providers.ollama_provider import OllamaProvider
+
+
+class AIRouter:
+
+    def __init__(self):
+        self.providers = {
+            "ollama": OllamaProvider(),
+            "openai": OpenAIProvider(),
+            "demo": DemoProvider()
+        }
+
+    def choose_provider(self, prompt: str) -> str:
+
+        # Free local AI has priority
+        if self.providers["ollama"].available:
+            return "ollama"
+
+        # OpenAI can be used later if configured
+        if self.providers["openai"].available:
+            return "openai"
+
+        # Always keep a fallback
+        return "demo"
+
+    def route(self, prompt: str) -> str:
+
+        provider_name = self.choose_provider(prompt)
+        provider = self.providers[provider_name]
+
+        print(f"\nIRIS Router selected: {provider_name}")
+
+        return provider.generate(prompt)

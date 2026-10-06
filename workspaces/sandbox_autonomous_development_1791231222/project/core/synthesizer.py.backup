@@ -1,0 +1,168 @@
+﻿from providers.ollama_provider import OllamaProvider
+
+
+class AISynthesizer:
+
+    def __init__(self):
+        self.provider = OllamaProvider()
+
+
+    def build_prompt(
+        self,
+        query: str,
+        research: dict
+    ) -> str:
+
+        comparison = research.get(
+            "comparison",
+            {}
+        )
+
+        evidence = research.get(
+            "evidence",
+            []
+        )
+
+        prompt = f"""
+You are IRIS, a personal AI research assistant.
+
+Research question:
+{query}
+
+Use ONLY the evidence supplied below.
+
+Rules:
+- Answer the question directly.
+- Combine information from multiple sources when possible.
+- Do not invent facts.
+- Do not treat promotional claims as established facts.
+- If evidence is uncertain, say so.
+- If sources appear to disagree, mention the disagreement.
+- Do not reveal internal reasoning.
+- Keep the answer concise and useful.
+
+EVIDENCE:
+"""
+
+
+        for source in evidence:
+
+            prompt += (
+                f"\nSOURCE: "
+                f"{source.get('title', '')}\n"
+            )
+
+            prompt += (
+                f"URL: "
+                f"{source.get('url', '')}\n"
+            )
+
+            for finding in source.get(
+                "findings",
+                []
+            ):
+
+                prompt += (
+                    f"- {finding}\n"
+                )
+
+
+        supported = comparison.get(
+            "supported",
+            []
+        )
+
+        unique = comparison.get(
+            "unique",
+            []
+        )
+
+        conflicts = comparison.get(
+            "possible_conflicts",
+            []
+        )
+
+
+        if supported:
+
+            prompt += (
+                "\nFACTS WITH CROSS-SOURCE "
+                "SUPPORT:\n"
+            )
+
+            for item in supported:
+
+                prompt += (
+                    f"- {item['finding']}\n"
+                    f"Sources: "
+                    f"{item['source']}, "
+                    f"{', '.join(item['supported_by'])}\n"
+                )
+
+
+        if unique:
+
+            prompt += (
+                "\nFACTS FOUND IN ONLY ONE "
+                "SOURCE:\n"
+            )
+
+            for item in unique:
+
+                prompt += (
+                    f"- {item['finding']}\n"
+                    f"Source: {item['source']}\n"
+                )
+
+
+        if conflicts:
+
+            prompt += (
+                "\nPOSSIBLE CONFLICTS:\n"
+            )
+
+            for item in conflicts:
+
+                prompt += (
+                    f"- {item['source_1']}: "
+                    f"{item['finding_1']}\n"
+                    f"- {item['source_2']}: "
+                    f"{item['finding_2']}\n"
+                )
+
+
+        prompt += """
+
+Write ONLY the final answer.
+
+Do not include:
+- chain of thought
+- internal reasoning
+- analysis
+- "Thinking..."
+"""
+
+        return prompt
+
+
+    def synthesize(
+        self,
+        query: str,
+        research: dict
+    ) -> str:
+
+        if not self.provider.available:
+
+            return (
+                "AI synthesis unavailable: "
+                "Ollama is not running."
+            )
+
+        prompt = self.build_prompt(
+            query,
+            research
+        )
+
+        return self.provider.generate(
+            prompt
+        )

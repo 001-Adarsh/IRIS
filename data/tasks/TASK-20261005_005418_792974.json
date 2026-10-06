@@ -1,0 +1,17 @@
+{
+  "task_id": "TASK-20261005_005418_792974",
+  "objective": "give a excel file containing top 10 richest person of india",
+  "status": "planning",
+  "step": 2,
+  "attempts": 2,
+  "last_tool": null,
+  "last_result": null,
+  "verification": {
+    "verified": true,
+    "reason": "Research produced source/evidence information."
+  },
+  "next_action": null,
+  "history": [],
+  "created_at": "2026-10-05T00:54:18.793064",
+  "updated_at": "2026-10-05T00:54:21.664535"
+}

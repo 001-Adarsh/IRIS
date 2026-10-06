@@ -1,0 +1,6 @@
+2026/10/06-03:35:36.818 4124 Reusing MANIFEST C:\Users\adars\IRIS\data\iris_browser_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/10/06-03:35:36.819 4124 Recovering log #3
+2026/10/06-03:35:36.821 4124 Reusing old log C:\Users\adars\IRIS\data\iris_browser_profile\Default\Local Storage\leveldb/000003.log 
+2026/10/06-03:36:36.962 32dc Level-0 table #5: started
+2026/10/06-03:36:36.973 32dc Level-0 table #5: 19607 bytes OK
+2026/10/06-03:36:36.976 32dc Delete type=0 #3

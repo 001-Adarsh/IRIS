@@ -1,0 +1,486 @@
+﻿from core.router import AIRouter
+from core.researcher import WebResearcher
+from core.synthesizer import AISynthesizer
+from tools.manager import ToolManager
+
+
+class IRISAgent:
+
+    def __init__(self):
+        self.router = AIRouter()
+        self.tools = ToolManager()
+        self.researcher = WebResearcher()
+        self.synthesizer = AISynthesizer()
+
+
+    def run(self, prompt: str):
+
+        p = prompt.lower().strip()
+
+
+        # ==========================
+        # EXIT
+        # ==========================
+
+        if p in ["exit", "quit", "/bye", "/exit", "/quit"]:
+            return "__IRIS_EXIT__"
+
+
+        # ==========================
+        # WEB RESEARCH
+        # ==========================
+
+        research_triggers = [
+            "research the internet",
+            "research internet",
+            "research web",
+            "research online",
+            "research",
+            "find out about",
+            "find out"
+        ]
+
+        if any(p.startswith(x) for x in research_triggers):
+
+            query = prompt
+
+            phrases = [
+                "research the internet for",
+                "research the internet",
+                "research internet for",
+                "research internet",
+                "research web for",
+                "research web",
+                "research online for",
+                "research online",
+                "research for",
+                "research",
+                "find out about",
+                "find out"
+            ]
+
+            for phrase in phrases:
+
+                if query.lower().startswith(phrase):
+                    query = query[len(phrase):].strip()
+                    break
+
+            if not query:
+                return "Please provide a research topic."
+
+            research = self.researcher.research(
+                query,
+                max_sources=3
+            )
+
+            if not research.get("evidence"):
+                return "IRIS could not find usable evidence."
+
+            print(
+                "\nIRIS AI Synthesizer: "
+                "Creating final answer..."
+            )
+
+            return self.synthesizer.synthesize(
+                query,
+                research
+            )
+
+
+        # ==========================
+        # WEB SEARCH
+        # ==========================
+
+        search_triggers = [
+            "search the internet",
+            "search internet",
+            "search in internet",
+            "search online",
+            "search web"
+        ]
+
+        if any(p.startswith(x) for x in search_triggers):
+
+            query = prompt
+
+            phrases = [
+                "search the internet for",
+                "search the internet",
+                "search internet for",
+                "search internet",
+                "search in internet for",
+                "search in internet",
+                "search online for",
+                "search online",
+                "search web for",
+                "search web"
+            ]
+
+            for phrase in phrases:
+
+                if query.lower().startswith(phrase):
+                    query = query[len(phrase):].strip()
+                    break
+
+            if not query:
+                return "Please provide a search query."
+
+            results = self.tools.execute(
+                "search_web",
+                query=query,
+                max_results=5
+            )
+
+            if not results:
+                return "No web results found."
+
+            output = [
+                "=== IRIS WEB SEARCH ==="
+            ]
+
+            for i, result in enumerate(results, 1):
+
+                output.append(
+                    f"\n[{i}] {result['title']}\n"
+                    f"URL: {result['url']}\n"
+                    f"INFO: {result['snippet']}"
+                )
+
+            return "\n".join(output)
+
+
+        # ==========================
+        # POWERSHELL
+        # ==========================
+
+        if (
+            p.startswith("run powershell")
+            or p.startswith("powershell")
+            or p.startswith("check my computer")
+        ):
+
+            command = prompt
+
+            phrases = [
+                "run powershell",
+                "powershell",
+                "check my computer"
+            ]
+
+            for phrase in phrases:
+
+                if command.lower().startswith(phrase):
+                    command = command[len(phrase):].strip()
+                    break
+
+            if not command:
+                return "Please provide a PowerShell command."
+
+            return self.tools.execute(
+                "run_powershell",
+                command=command
+            )
+
+
+        # ==========================
+        # PYTHON
+        # ==========================
+
+        if (
+            p.startswith("run python")
+            or p.startswith("python")
+        ):
+
+            code = prompt
+
+            phrases = [
+                "run python",
+                "python"
+            ]
+
+            for phrase in phrases:
+
+                if code.lower().startswith(phrase):
+                    code = code[len(phrase):].strip()
+                    break
+
+            if not code:
+                return "Please provide Python code."
+
+            return self.tools.execute(
+                "run_python",
+                code=code
+            )
+
+
+        # ==========================
+        # EXCEL
+        # ==========================
+
+        if (
+            "create an excel" in p
+            or "make an excel" in p
+        ):
+
+            data = [
+                {
+                    "Name": "Adarsh",
+                    "Role": "User"
+                },
+                {
+                    "Name": "IRIS",
+                    "Role": "AI Assistant"
+                }
+            ]
+
+            result = self.tools.execute(
+                "create_excel",
+                filename="iris_generated.xlsx",
+                data=data
+            )
+
+            return (
+                "I created the Excel file successfully:\n"
+                f"{result}"
+            )
+
+
+        # ==========================
+        # CREATE FILE
+        # ==========================
+
+        if (
+            "create a text file" in p
+            or "create a file" in p
+        ):
+
+            result = self.tools.execute(
+                "create_file",
+                filename="iris_created.txt",
+                content="This file was created by IRIS."
+            )
+
+            return (
+                "I created the file successfully:\n"
+                f"{result}"
+            )
+
+
+        # ==========================
+        # LIST FILES
+        # ==========================
+
+        if (
+            "list files" in p
+            or "show my files" in p
+        ):
+
+            files = self.tools.execute(
+                "list_files"
+            )
+
+            return (
+                "Files in the IRIS data folder:\n"
+                f"{files}"
+            )
+
+
+        # ==========================
+        # READ FILE
+        # ==========================
+
+        if "read iris_note.txt" in p:
+
+            content = self.tools.execute(
+                "read_file",
+                filename="iris_note.txt"
+            )
+
+            return (
+                "Contents of iris_note.txt:\n"
+                f"{content}"
+            )
+
+
+        # ==========================
+        # DOCUMENT READER
+        # ==========================
+
+        if (
+            p.startswith("read document")
+            or p.startswith("read file")
+        ):
+
+            filename = prompt
+
+            phrases = [
+                "read document",
+                "read file"
+            ]
+
+            for phrase in phrases:
+
+                if filename.lower().startswith(phrase):
+                    filename = filename[len(phrase):].strip()
+                    break
+
+            if not filename:
+                return "Please provide a filename."
+
+            return self.tools.execute(
+                "read_document",
+                filename=filename
+            )
+
+
+        # ==========================
+        # MEMORY
+        # ==========================
+
+        if (
+            p.startswith("remember ")
+            or p.startswith("remember:")
+        ):
+
+            memory = prompt
+
+            if memory.lower().startswith("remember:"):
+                memory = memory[len("remember:"):].strip()
+
+            elif memory.lower().startswith("remember "):
+                memory = memory[len("remember "):].strip()
+
+            # Remove "that"
+            if memory.lower().startswith("that "):
+                memory = memory[5:].strip()
+
+            if not memory:
+                return "Please provide something for me to remember."
+
+            return self.tools.execute(
+                "remember",
+                content=memory
+            )
+
+
+        # ==========================
+        # SEARCH MEMORY
+        # ==========================
+
+        if (
+            p.startswith("what do you remember")
+            or p.startswith("search memory")
+            or p.startswith("recall ")
+        ):
+
+            query = prompt
+
+            phrases = [
+                "what do you remember about",
+                "what do you remember",
+                "search memory",
+                "recall"
+            ]
+
+            for phrase in phrases:
+
+                if query.lower().startswith(phrase):
+                    query = query[len(phrase):].strip()
+                    break
+
+            if not query:
+                return "Please tell me what you want me to remember."
+
+            # Remove punctuation
+            query = query.strip(" ?!.,:;")
+
+            results = self.tools.execute(
+                "search_memory",
+                query=query
+            )
+
+            if not results:
+                return "I don't have any matching memories."
+
+            output = []
+
+            for item in results:
+
+                output.append(
+                    f"- {item[1]}"
+                )
+
+            return "\n".join(output)
+
+
+        # ==========================
+        # LIST MEMORIES
+        # ==========================
+
+        if (
+            p == "list memories"
+            or p == "show memories"
+            or p == "show my memories"
+        ):
+
+            results = self.tools.execute(
+                "list_memories"
+            )
+
+            if not results:
+                return "I don't have any saved memories."
+
+            output = []
+
+            for item in results:
+
+                output.append(
+                    f"- {item[1]}"
+                )
+
+            return "\n".join(output)
+
+
+        # ==========================
+        # AUTOMATIC MEMORY
+        # ==========================
+
+        automatic_memory_triggers = [
+            "my name is ",
+            "i am ",
+            "i'm ",
+            "i work ",
+            "i work at ",
+            "i live ",
+            "i prefer ",
+            "i like ",
+            "i dislike ",
+            "i'm learning ",
+            "i am learning ",
+            "my goal is ",
+            "my laptop is "
+        ]
+
+        memory_text = prompt.strip()
+
+        if any(
+            memory_text.lower().startswith(trigger)
+            for trigger in automatic_memory_triggers
+        ):
+
+            result = self.tools.execute(
+                "remember",
+                content=memory_text
+            )
+
+            return (
+                "I'll remember that.\n"
+                f"{result}"
+            )
+
+
+        # ==========================
+        # NORMAL AI
+        # ==========================
+
+        return self.router.route(prompt)

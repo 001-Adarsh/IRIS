@@ -1,0 +1,146 @@
+2026-10-05 21:10:12.978: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:10:12.978: [INFO] Profiles total count: 1
+2026-10-05 21:10:12.978: [INFO] Profile: name=Profile 1 path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=null
+2026-10-05 21:10:12.978: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:10:12.978: [INFO] VisibilityChanged: 0
+2026-10-05 21:10:13.179: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-05 21:10:13.180: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-05 21:10:13.180: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-05 21:10:13.182: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-05 21:10:13.182: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:10:13.182: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:10:13.182: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:10:13.182: [INFO] BookmarksSnapshot Startup total=4 bar=4 other=0 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:11:14.057: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-05 21:11:14.058: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-05 21:11:14.058: [INFO] BookmarkNodeAdded, ABU: 0
+2026-10-05 21:11:27.492: [INFO] VisibilityChanged: 1
+2026-10-05 21:11:53.306: [INFO] VisibilityChanged: 0
+2026-10-05 21:12:04.344: [INFO] VisibilityChanged: 1
+2026-10-05 21:13:01.181: [INFO] VisibilityChanged: 0
+2026-10-05 21:13:24.333: [INFO] VisibilityChanged: 1
+2026-10-05 21:13:28.025: [INFO] VisibilityChanged: 0
+2026-10-05 21:14:44.568: [INFO] VisibilityChanged: 1
+2026-10-05 21:14:48.057: [INFO] VisibilityChanged: 0
+2026-10-05 21:14:51.044: [INFO] VisibilityChanged: 1
+2026-10-05 21:14:58.123: [INFO] VisibilityChanged: 0
+2026-10-05 21:16:13.151: [INFO] VisibilityChanged: 1
+2026-10-05 21:16:13.908: [INFO] VisibilityChanged: 0
+2026-10-05 21:16:15.792: [INFO] VisibilityChanged: 1
+2026-10-05 21:16:18.408: [INFO] VisibilityChanged: 0
+2026-10-05 21:16:57.344: [INFO] BookmarksSnapshot Shutdown total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:17:46.537: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:17:46.537: [INFO] Profiles total count: 1
+2026-10-05 21:17:46.537: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:16:07.115Z
+2026-10-05 21:17:46.537: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:17:46.537: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:16:07.115Z
+2026-10-05 21:17:46.537: [INFO] VisibilityChanged: 0
+2026-10-05 21:17:46.635: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:17:46.635: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:17:46.635: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:17:46.635: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:32:56.880: [INFO] BookmarksSnapshot Shutdown total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:33:20.423: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:33:20.423: [INFO] Profiles total count: 1
+2026-10-05 21:33:20.423: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:21:36.054Z
+2026-10-05 21:33:20.423: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:33:20.423: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:21:36.054Z
+2026-10-05 21:33:20.423: [INFO] VisibilityChanged: 0
+2026-10-05 21:33:20.522: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:33:20.522: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:33:20.522: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:33:20.522: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:39:56.469: [INFO] BookmarksSnapshot Shutdown total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:40:30.565: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:40:30.565: [INFO] Profiles total count: 1
+2026-10-05 21:40:30.565: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:38:40.637Z
+2026-10-05 21:40:30.565: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:40:30.565: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:38:40.637Z
+2026-10-05 21:40:30.565: [INFO] VisibilityChanged: 0
+2026-10-05 21:40:30.669: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:40:30.669: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:40:30.669: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:40:30.669: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:41:42.704: [INFO] BookmarksSnapshot Shutdown total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:42:20.026: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:42:20.026: [INFO] Profiles total count: 1
+2026-10-05 21:42:20.026: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:41:29.345Z
+2026-10-05 21:42:20.026: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:42:20.026: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:41:29.345Z
+2026-10-05 21:42:20.026: [INFO] VisibilityChanged: 0
+2026-10-05 21:42:20.121: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:42:20.121: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:42:20.121: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:42:20.121: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:44:23.516: [INFO] VisibilityChanged: 1
+2026-10-05 21:44:25.285: [INFO] BookmarksSnapshot Shutdown total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:46:47.556: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:46:47.556: [INFO] Profiles total count: 1
+2026-10-05 21:46:47.557: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:44:18.623Z
+2026-10-05 21:46:47.557: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:46:47.557: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:44:18.623Z
+2026-10-05 21:46:47.557: [INFO] VisibilityChanged: 0
+2026-10-05 21:46:47.669: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:46:47.669: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:46:47.669: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:46:47.669: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:52:36.186: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:52:36.186: [INFO] Profiles total count: 1
+2026-10-05 21:52:36.186: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:50:03.095Z
+2026-10-05 21:52:36.186: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:52:36.186: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:50:03.095Z
+2026-10-05 21:52:36.186: [INFO] VisibilityChanged: 0
+2026-10-05 21:52:36.265: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:52:36.265: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:52:36.265: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:52:36.265: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:58:12.427: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:58:12.427: [INFO] Profiles total count: 1
+2026-10-05 21:58:12.427: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:54:35.790Z
+2026-10-05 21:58:12.427: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 21:58:12.427: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T21:54:35.790Z
+2026-10-05 21:58:12.427: [INFO] VisibilityChanged: 0
+2026-10-05 21:58:12.601: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 21:58:12.601: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 21:58:12.601: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 21:58:12.601: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 21:58:54.519: [INFO] VisibilityChanged: 1
+2026-10-05 21:59:03.240: [INFO] VisibilityChanged: 0
+2026-10-05 21:59:06.611: [INFO] VisibilityChanged: 1
+2026-10-05 21:59:13.908: [INFO] VisibilityChanged: 0
+2026-10-05 22:00:56.466: [INFO] VisibilityChanged: 1
+2026-10-05 22:01:10.558: [INFO] VisibilityChanged: 0
+2026-10-05 22:01:11.923: [INFO] VisibilityChanged: 1
+2026-10-05 22:01:13.008: [INFO] VisibilityChanged: 0
+2026-10-05 22:01:38.952: [INFO] VisibilityChanged: 1
+2026-10-05 22:01:44.680: [INFO] VisibilityChanged: 0
+2026-10-05 22:01:52.885: [INFO] VisibilityChanged: 1
+2026-10-05 22:01:57.307: [INFO] VisibilityChanged: 0
+2026-10-05 22:02:05.444: [INFO] VisibilityChanged: 1
+2026-10-05 22:02:10.507: [INFO] VisibilityChanged: 0
+2026-10-05 22:02:13.622: [INFO] VisibilityChanged: 1
+2026-10-05 22:02:39.547: [INFO] BookmarksSnapshot Shutdown total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 22:05:36.880: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 22:05:36.880: [INFO] Profiles total count: 1
+2026-10-05 22:05:36.881: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T22:01:43.484Z
+2026-10-05 22:05:36.881: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 22:05:36.881: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T22:01:43.484Z
+2026-10-05 22:05:36.881: [INFO] VisibilityChanged: 0
+2026-10-05 22:05:36.975: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 22:05:36.975: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 22:05:36.975: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 22:05:36.975: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 22:06:21.837: [INFO] VisibilityChanged: 1
+2026-10-05 22:06:28.680: [INFO] VisibilityChanged: 0
+2026-10-05 22:07:02.415: [INFO] VisibilityChanged: 0
+2026-10-05 22:10:40.590: [INFO] BookmarksSnapshot Shutdown total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1
+2026-10-05 22:11:01.361: [INFO] CurrentProfilePath: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 22:11:01.361: [INFO] Profiles total count: 1
+2026-10-05 22:11:01.361: [INFO] Profile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T22:07:19.864Z
+2026-10-05 22:11:01.361: [INFO] LastUsedProfileDir: C:\Users\adars\IRIS\data\iris_browser_profile\Default
+2026-10-05 22:11:01.361: [INFO] MostRecentlyActiveProfile: name=Personal path=C:\Users\adars\IRIS\data\iris_browser_profile\Default lastActive=2026-10-05T22:07:19.864Z
+2026-10-05 22:11:01.361: [INFO] VisibilityChanged: 0
+2026-10-05 22:11:01.450: [INFO] OnDoneLoading sync enabled: 0
+2026-10-05 22:11:01.450: [INFO] BookmarkModelLoaded, ids_reassigned: 0
+2026-10-05 22:11:01.450: [INFO] BookmarksLoadDropped droppedNodes=0
+2026-10-05 22:11:01.450: [INFO] BookmarksSnapshot Startup total=6 bar=5 other=1 mobile=0 showBar=0 showBarNTP=1

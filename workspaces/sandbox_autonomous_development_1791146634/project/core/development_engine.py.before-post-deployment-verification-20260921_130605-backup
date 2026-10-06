@@ -1,0 +1,118 @@
+﻿from pathlib import Path
+import json
+
+from core.sandbox import IRISSandbox
+from core.test_runner import IRISTestRunner
+from core.upgrade_manager import IRISUpgradeManager
+from core.approval_gate import IRISApprovalGate
+from core.deployment_manager import IRISDeploymentManager
+
+
+class IRISDevelopmentEngine:
+
+    def __init__(self, project_root=None):
+        self.project_root = Path(
+            project_root or Path(__file__).resolve().parent.parent
+        )
+
+        self.sandbox = IRISSandbox()
+        self.upgrades = IRISUpgradeManager(self.project_root)
+        self.approval = IRISApprovalGate()
+        self.deployment = IRISDeploymentManager(
+            self.project_root
+        )
+
+    def create_development_workspace(self, name="development"):
+        snapshot = self.sandbox.create_project_snapshot(name)
+
+        print("\n=== IRIS DEVELOPMENT SANDBOX ===")
+        print(f"Workspace: {snapshot['workspace']}")
+        print(f"Project:   {snapshot['project']}")
+        print("Production modified: NO")
+
+        return snapshot
+
+    def test_workspace(self, project_path):
+        runner = IRISTestRunner(project_path)
+        result = runner.run()
+
+        print("\n=== IRIS SANDBOX TEST ===")
+        print(f"Passed: {result['passed']}")
+
+        return result
+
+    def propose_upgrade(
+        self,
+        objective,
+        workspace,
+        changes,
+        test_results
+    ):
+        return self.upgrades.create_proposal(
+            objective=objective,
+            workspace=workspace,
+            changes=changes,
+            test_results=test_results
+        )
+
+    def load_proposal(self, proposal_file):
+        path = Path(proposal_file).resolve()
+
+        try:
+            path.relative_to(
+                (self.project_root / "upgrade_proposals").resolve()
+            )
+        except ValueError:
+            raise PermissionError(
+                "Proposal must be inside upgrade_proposals."
+            )
+
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Proposal not found: {proposal_file}"
+            )
+
+        return json.loads(
+            path.read_text(encoding="utf-8")
+        )
+
+    def approve_and_deploy(self, proposal_file):
+        proposal_path = Path(proposal_file).resolve()
+        proposal = self.load_proposal(proposal_path)
+
+        proposal["proposal_file"] = str(proposal_path)
+
+        approved = self.approval.request_approval(
+            proposal
+        )
+
+        if not approved:
+            return {
+                "status": "cancelled",
+                "production_modified": False
+            }
+
+        result = self.deployment.deploy(
+            proposal
+        )
+
+        proposal["status"] = "deployed"
+        proposal["production_modified"] = True
+        proposal["deployment"] = result
+
+        proposal_path.write_text(
+            json.dumps(proposal, indent=2),
+            encoding="utf-8"
+        )
+
+        return result
+
+    def development_status(self):
+        return {
+            "sandbox_enabled": True,
+            "autonomous_development": True,
+            "autonomous_testing": True,
+            "production_deployment": "explicit_APPROVE_required",
+            "production_backup": True,
+            "rollback_support": "backup_created"
+        }

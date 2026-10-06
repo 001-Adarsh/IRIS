@@ -1,0 +1,52 @@
+from pathlib import Path
+import shutil
+from datetime import datetime
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SANDBOX_ROOT = PROJECT_ROOT / "sandbox"
+
+class IRISSandbox:
+    def __init__(self):
+        SANDBOX_ROOT.mkdir(parents=True, exist_ok=True)
+
+    def create_workspace(self, name="development"):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        workspace = SANDBOX_ROOT / f"{name}_{timestamp}"
+        workspace.mkdir(parents=True, exist_ok=True)
+        return workspace
+
+    def copy_project(self, workspace):
+        destination = workspace / "project"
+        destination.mkdir(parents=True, exist_ok=True)
+
+        excluded = {".venv", "__pycache__", ".git", "sandbox"}
+
+        for item in PROJECT_ROOT.iterdir():
+            if item.name in excluded:
+                continue
+
+            target = destination / item.name
+
+            if item.is_dir():
+                shutil.copytree(
+                    item,
+                    target,
+                    ignore=shutil.ignore_patterns(
+                        "__pycache__",
+                        "*.pyc"
+                    )
+                )
+            else:
+                shutil.copy2(item, target)
+
+        return destination
+
+    def create_project_snapshot(self, name="development"):
+        workspace = self.create_workspace(name)
+        project = self.copy_project(workspace)
+
+        return {
+            "workspace": str(workspace),
+            "project": str(project),
+            "production_modified": False
+        }

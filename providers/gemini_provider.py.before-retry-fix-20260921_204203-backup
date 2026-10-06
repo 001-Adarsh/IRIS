@@ -1,0 +1,54 @@
+﻿import os
+from google import genai
+from providers.base import LLMProvider
+
+
+class GeminiProvider(LLMProvider):
+
+    TIMEOUT_SECONDS = 45
+
+    @property
+    def name(self) -> str:
+        return "gemini"
+
+    @property
+    def available(self) -> bool:
+        return bool(os.getenv("GEMINI_API_KEY"))
+
+    def generate(self, prompt: str) -> str:
+        if not self.available:
+            return "Gemini API key is not configured."
+
+        try:
+            client = genai.Client(
+                api_key=os.environ["GEMINI_API_KEY"],
+                http_options={
+                    "timeout": self.TIMEOUT_SECONDS * 1000
+                }
+            )
+
+            response = client.interactions.create(
+                model="gemini-3.6-flash",
+                input=prompt
+            )
+
+            answer = response.output_text.strip()
+
+            if not answer:
+                return "Gemini returned an empty response."
+
+            return answer
+
+        except Exception as e:
+            error_text = str(e).strip()
+
+            if (
+                "timeout" in error_text.lower()
+                or "timed out" in error_text.lower()
+            ):
+                return (
+                    "Gemini timeout: "
+                    f"request exceeded {self.TIMEOUT_SECONDS} seconds."
+                )
+
+            return f"Gemini error: {error_text}"

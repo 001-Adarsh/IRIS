@@ -1,0 +1,15 @@
+2026/10/06-03:41:07.491 5054 Reusing MANIFEST C:\Users\adars\IRIS\data\iris_browser_profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/10/06-03:41:07.492 5054 Recovering log #29
+2026/10/06-03:41:07.492 5054 Reusing old log C:\Users\adars\IRIS\data\iris_browser_profile\Default\EdgeCoupons/coupons_data.db/000029.log 
+2026/10/06-03:41:07.999 1f68 Level-0 table #33: started
+2026/10/06-03:41:08.003 1f68 Level-0 table #33: 683444 bytes OK
+2026/10/06-03:41:08.004 1f68 Delete type=0 #29
+2026/10/06-03:41:08.005 439c Compacting 4@0 + 1@1 files
+2026/10/06-03:41:08.009 439c Generated table #34@0: 4 keys, 683351 bytes
+2026/10/06-03:41:08.009 439c Compacted 4@0 + 1@1 files => 683351 bytes
+2026/10/06-03:41:08.010 439c compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/10/06-03:41:08.011 439c Delete type=2 #21
+2026/10/06-03:41:08.011 439c Delete type=2 #24
+2026/10/06-03:41:08.011 439c Delete type=2 #27
+2026/10/06-03:41:08.011 439c Delete type=2 #30
+2026/10/06-03:41:08.011 439c Delete type=2 #33

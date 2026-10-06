@@ -1,0 +1,24 @@
+class IRISApprovalGate:
+
+    APPROVAL_WORDS = {
+        "yes",
+        "approve",
+        "approved",
+        "deploy",
+        "proceed",
+        "confirm"
+    }
+
+    def request_approval(self, proposal):
+        print("\n=== IRIS UPGRADE PROPOSAL ===")
+        print(f"Objective: {proposal.get('objective')}")
+        print(f"Workspace: {proposal.get('workspace')}")
+        print(f"Tests passed: {proposal.get('tests_passed')}")
+        print("\nProduction changes are NOT yet authorized.")
+
+        answer = input(
+            "\nType APPROVE to authorize deployment, "
+            "or anything else to cancel: "
+        ).strip().lower()
+
+        return answer in self.APPROVAL_WORDS
