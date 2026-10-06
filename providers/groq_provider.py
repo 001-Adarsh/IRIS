@@ -77,11 +77,11 @@ class GroqProvider:
             stream=True,
         ) as response:
             response.raise_for_status()
-            for line in response.iter_lines(decode_unicode=True):
-                if not line or not line.startswith("data:"):
+            for line in response.iter_lines():
+                if not line or not line.startswith(b"data:"):
                     continue
 
-                data = line[5:].strip()
+                data = line[5:].strip().decode("utf-8")
                 if data == "[DONE]":
                     return
 
