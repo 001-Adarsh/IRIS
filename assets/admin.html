@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#090b12">
+    <meta name="robots" content="noindex, nofollow">
+    <title>IRIS Owner Inbox</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #090b12;
+        color: #f4f5fb;
+        --muted: #9699aa;
+        --line: #ffffff1b;
+        --accent: #b49aff;
+      }
+      * { box-sizing: border-box; }
+      body { min-height: 100vh; margin: 0; background: radial-gradient(ellipse at 75% 0%, #35265b66, transparent 45rem), #090b12; }
+      button, input, textarea { font: inherit; }
+      button { color: inherit; cursor: pointer; }
+      .shell { width: min(1180px, 100%); min-height: 100vh; margin: auto; padding: 24px; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+      h1, h2, p { margin-top: 0; }
+      h1 { margin-bottom: 4px; font-size: 23px; }
+      .subtitle, .muted { color: var(--muted); font-size: 13px; }
+      .panel, .inbox, .conversation, .login { border: 1px solid var(--line); border-radius: 18px; background: #10111bd9; box-shadow: 0 20px 60px #0004; backdrop-filter: blur(16px); }
+      .login { width: min(420px, 100%); margin: 12vh auto 0; padding: 28px; }
+      .login h1 { margin-bottom: 8px; }
+      .login form { margin-top: 22px; }
+      label { display: block; margin-bottom: 8px; color: #c9c8d7; font-size: 12px; }
+      input, textarea { width: 100%; border: 1px solid #373545; border-radius: 11px; padding: 12px; color: inherit; background: #090a12; outline: none; }
+      input:focus, textarea:focus { border-color: #8f78d3; box-shadow: 0 0 0 3px #8f78d326; }
+      .primary, .secondary, .danger, .tab { min-height: 38px; border: 1px solid var(--line); border-radius: 10px; padding: 0 13px; background: #ffffff0b; }
+      .primary { border-color: #a88df280; background: linear-gradient(145deg, #7659bd, #4d397f); }
+      .danger { border-color: #a9515f70; color: #ffb8c1; }
+      button:disabled { cursor: wait; opacity: .55; }
+      #login-form .primary { width: 100%; margin-top: 13px; }
+      .error { min-height: 20px; margin: 12px 0 0; color: #ffb8c1; font-size: 12px; }
+      [hidden] { display: none !important; }
+      .layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 16px; min-height: 70vh; }
+      .inbox, .conversation { min-width: 0; overflow: hidden; }
+      .inbox-head, .conversation-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px; border-bottom: 1px solid var(--line); }
+      .inbox-head h2, .conversation-head h2 { margin: 0; font-size: 15px; }
+      .tabs { display: flex; gap: 6px; padding: 12px 12px 4px; }
+      .tab { min-height: 32px; padding: 0 10px; color: var(--muted); font-size: 11px; }
+      .tab.active { border-color: #b49aff80; color: #e7ddff; background: #9c7add20; }
+      #request-list { max-height: calc(70vh - 110px); overflow-y: auto; padding: 8px; }
+      .request { width: 100%; display: block; margin: 4px 0; padding: 12px; border: 1px solid transparent; border-radius: 12px; background: transparent; text-align: left; }
+      .request:hover, .request.selected { border-color: #ffffff1c; background: #ffffff0a; }
+      .request strong { display: block; margin-bottom: 5px; font-size: 13px; }
+      .request small, .request p { display: block; overflow: hidden; margin: 0; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      .request small { margin-bottom: 7px; }
+      .conversation { display: flex; flex-direction: column; min-height: 60vh; }
+      #conversation-meta { margin-top: 4px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 7px; }
+      #transcript { flex: 1; min-height: 250px; max-height: 55vh; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding: 18px; }
+      .bubble { max-width: min(80%, 620px); align-self: flex-start; border: 1px solid var(--line); border-radius: 14px 14px 14px 4px; padding: 10px 13px; background: #ffffff0c; line-height: 1.55; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 13px; }
+      .bubble.admin { align-self: flex-end; border-color: #b49aff60; border-radius: 14px 14px 4px 14px; background: #654c9d7a; }
+      .bubble small { display: block; margin-bottom: 4px; color: #b9b7c8; font-size: 10px; }
+      .empty { margin: auto; padding: 30px; color: var(--muted); text-align: center; font-size: 13px; }
+      #reply-form { display: flex; align-items: flex-end; gap: 9px; padding: 13px; border-top: 1px solid var(--line); }
+      #reply-form textarea { min-height: 44px; max-height: 140px; resize: vertical; }
+      #reply-form button { flex: 0 0 auto; }
+      @media (max-width: 760px) {
+        .shell { padding: 14px; }
+        .layout { grid-template-columns: 1fr; }
+        #request-list { max-height: 32vh; }
+        .conversation { min-height: 55vh; }
+        #transcript { max-height: none; }
+        header { align-items: flex-start; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section id="login-view" class="login" aria-labelledby="login-title">
+        <h1 id="login-title">IRIS owner inbox</h1>
+        <p class="subtitle">Sign in to review connection requests and chat privately with approved visitors.</p>
+        <form id="login-form">
+          <label for="admin-password">Admin password</label>
+          <input id="admin-password" type="password" autocomplete="current-password" required maxlength="256">
+          <button class="primary" type="submit">Sign in</button>
+        </form>
+        <p id="login-error" class="error" role="status"></p>
+      </section>
+
+      <section id="inbox-view" hidden>
+        <header>
+          <div>
+            <h1>IRIS owner inbox</h1>
+            <p class="subtitle">Review requests and have private in-app conversations.</p>
+          </div>
+          <button id="sign-out" class="secondary" type="button">Sign out</button>
+        </header>
+        <div class="layout">
+          <section class="inbox" aria-label="Connection requests">
+            <div class="inbox-head">
+              <h2>Conversations</h2>
+              <button id="refresh" class="secondary" type="button">Refresh</button>
+            </div>
+            <nav class="tabs" aria-label="Filter conversations">
+              <button class="tab active" data-status="pending" type="button">Requests</button>
+              <button class="tab" data-status="approved" type="button">Approved</button>
+              <button class="tab" data-status="all" type="button">All</button>
+            </nav>
+            <div id="request-list" aria-live="polite"></div>
+          </section>
+          <section class="conversation" aria-label="Selected conversation">
+            <div class="conversation-head">
+              <div>
+                <h2 id="conversation-title">Choose a request</h2>
+                <p id="conversation-meta" class="muted"></p>
+              </div>
+              <div id="conversation-actions" class="actions"></div>
+            </div>
+            <div id="transcript"><p class="empty">Requests and approved conversations will appear here.</p></div>
+            <form id="reply-form" hidden>
+              <textarea id="reply" rows="1" maxlength="2000" placeholder="Write a private reply…" aria-label="Private reply" required></textarea>
+              <button class="primary" type="submit">Send</button>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+    <script src="/assets/admin.js" defer></script>
+  </body>
+</html>

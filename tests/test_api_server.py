@@ -136,6 +136,8 @@ class TestPublicApi(unittest.TestCase):
         self.assertNotIn("OPENROUTER", response.text)
         self.assertIn("conversationHistory.slice(-10)", response.text)
         self.assertIn("/v1/chat/stream", response.text)
+        self.assertIn("Chat with Adarsh", response.text)
+        self.assertIn("/v1/connect/requests", response.text)
 
     def test_owner_portrait_is_served_as_png(self):
         response = self.client.get("/assets/adarsh-dwivedi.png")

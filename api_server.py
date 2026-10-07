@@ -9,20 +9,24 @@ IRIS_SANDBOX_IMAGE; it fails closed when that sandbox is unavailable.
 """
 
 import json
+import hashlib
+import hmac
 import logging
 import os
 import re
+import secrets
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -32,6 +36,7 @@ from slowapi.util import get_remote_address
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 from core.executor import IRISExecutor
+from core.live_connections import DuplicateConnectionError, LiveConnectionStore
 from core.router import provider_response_failed
 from core.synthesizer import AISynthesizer
 from tools.manager import ToolManager
@@ -52,6 +57,16 @@ public_rate_limit = limiter.shared_limit("20/minute", scope="public-api")
 app = FastAPI(title="IRIS API", version="1.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.middleware("http")
+async def disable_private_message_caching(request: Request, call_next: Any) -> Response:
+    response = await call_next(request)
+    if request.url.path.startswith(("/v1/admin", "/v1/connect")):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 app.mount(
     "/assets",
     StaticFiles(directory=Path(__file__).resolve().parent / "assets"),
@@ -165,6 +180,56 @@ class AdminExecutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     plan: dict[str, Any]
+
+
+class ConnectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(default="", max_length=80)
+    message: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("display_name", "message")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_blank(cls, value: str) -> str:
+        if not value:
+            raise ValueError("message must not be blank")
+        return value
+
+
+class ConnectionMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("message")
+    @classmethod
+    def message_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("message must not be blank")
+        return value
+
+
+class AdminLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=256)
+
+
+class ConnectionDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["approve", "decline", "close"]
+
+
+connection_store = LiveConnectionStore(
+    Path(os.getenv("IRIS_DATA_DIR", Path(__file__).resolve().parent / "data"))
+)
 
 
 def _sse_event(name: str, payload: dict[str, Any]) -> str:
@@ -319,6 +384,321 @@ def _admin_key_or_raise(supplied_key: str | None) -> str:
     if not IRISExecutor.is_valid_admin_key(supplied_key):
         raise HTTPException(status_code=403, detail="Admin authorization required.")
     return supplied_key
+
+
+def _admin_password_or_raise() -> str:
+    password = os.getenv("IRIS_ADMIN_PASSWORD", "")
+    if len(password) < 16:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The owner messaging panel is not configured. "
+                "Set a strong IRIS_ADMIN_PASSWORD on the server."
+            ),
+        )
+    return password
+
+
+def _session_signature(value: str, purpose: str) -> str:
+    password = _admin_password_or_raise().encode("utf-8")
+    key = hmac.new(
+        password,
+        f"iris-session:{purpose}:v1".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _secure_cookie(request: Request) -> bool:
+    return request.url.scheme == "https" or os.getenv("RENDER", "").lower() == "true"
+
+
+def _visitor_id(request: Request, *, allow_missing: bool = False) -> str | None:
+    token = request.cookies.get("iris_visitor")
+    if token is None and allow_missing:
+        return None
+    if token is None:
+        raise HTTPException(status_code=401, detail="Visitor session is required.")
+    visitor_id, separator, signature = token.partition(".")
+    if (
+        not separator
+        or len(visitor_id) < 24
+        or len(signature) != 64
+        or not hmac.compare_digest(
+            signature.encode("utf-8"),
+            _session_signature(visitor_id, "visitor").encode("ascii"),
+        )
+    ):
+        raise HTTPException(status_code=401, detail="Visitor session is invalid.")
+    return visitor_id
+
+
+def _require_visitor_id(request: Request) -> str:
+    visitor_id = _visitor_id(request)
+    if visitor_id is None:
+        raise HTTPException(status_code=401, detail="Visitor session is required.")
+    return visitor_id
+
+
+def _require_admin(request: Request) -> None:
+    token = request.cookies.get("iris_admin")
+    if token is None:
+        raise HTTPException(status_code=401, detail="Admin sign-in is required.")
+    expiry_text, separator, signature = token.partition(".")
+    try:
+        expiry = int(expiry_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Admin session is invalid.") from exc
+    if (
+        not separator
+        or expiry <= int(time.time())
+        or len(signature) != 64
+        or not hmac.compare_digest(
+            signature.encode("utf-8"),
+            _session_signature(expiry_text, "admin").encode("ascii"),
+        )
+    ):
+        raise HTTPException(status_code=401, detail="Admin session is invalid.")
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_panel() -> FileResponse:
+    return FileResponse(
+        Path(__file__).resolve().parent / "assets" / "admin.html",
+        media_type="text/html",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/v1/admin/session")
+@limiter.limit("5/minute")
+def create_admin_session(
+    request: Request,
+    body: AdminLoginRequest,
+    response: Response,
+) -> dict[str, str]:
+    password = _admin_password_or_raise()
+    if not hmac.compare_digest(
+        body.password.encode("utf-8"),
+        password.encode("utf-8"),
+    ):
+        raise HTTPException(status_code=403, detail="Admin password is incorrect.")
+    expires_at = str(int(time.time()) + 12 * 60 * 60)
+    response.set_cookie(
+        "iris_admin",
+        f"{expires_at}.{_session_signature(expires_at, 'admin')}",
+        max_age=12 * 60 * 60,
+        httponly=True,
+        secure=_secure_cookie(request),
+        samesite="strict",
+        path="/v1/admin",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return {"status": "ok"}
+
+
+@app.delete("/v1/admin/session")
+def delete_admin_session(request: Request) -> Response:
+    response = Response(status_code=204, headers={"Cache-Control": "no-store"})
+    response.delete_cookie(
+        "iris_admin",
+        httponly=True,
+        secure=_secure_cookie(request),
+        samesite="strict",
+        path="/v1/admin",
+    )
+    return response
+
+
+@app.get("/v1/admin/connections")
+@limiter.limit("120/minute")
+def admin_list_connections(
+    request: Request,
+    status: Literal["pending", "approved", "declined", "closed"] | None = None,
+) -> list[dict[str, Any]]:
+    _require_admin(request)
+    return connection_store.list_connections(status)
+
+
+@app.post("/v1/admin/connections/{connection_id}/decision")
+@limiter.limit("60/minute")
+def admin_decide_connection(
+    request: Request,
+    connection_id: int,
+    body: ConnectionDecisionRequest,
+) -> dict[str, Any]:
+    _require_admin(request)
+    existing = connection_store.get_connection(connection_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Connection request not found.")
+    if body.action == "approve":
+        if existing["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="Only pending requests can be approved.",
+            )
+        status = "approved"
+    elif body.action == "decline":
+        if existing["status"] != "pending":
+            raise HTTPException(
+                status_code=409,
+                detail="Only pending requests can be declined.",
+            )
+        status = "declined"
+    else:
+        if existing["status"] != "approved":
+            raise HTTPException(
+                status_code=409,
+                detail="Only approved conversations can be closed.",
+            )
+        status = "closed"
+    updated = connection_store.set_status(
+        connection_id,
+        status,
+        expected_status=existing["status"],
+    )
+    if updated is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This connection changed before the action could be applied.",
+        )
+    return updated
+
+
+@app.get("/v1/admin/connections/{connection_id}/messages")
+@limiter.limit("120/minute")
+def admin_list_messages(
+    request: Request,
+    connection_id: int,
+    after_id: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    _require_admin(request)
+    if connection_store.get_connection(connection_id) is None:
+        raise HTTPException(status_code=404, detail="Connection request not found.")
+    return connection_store.list_messages(connection_id, after_id)
+
+
+@app.post("/v1/admin/connections/{connection_id}/messages")
+@limiter.limit("60/minute")
+def admin_send_message(
+    request: Request,
+    connection_id: int,
+    body: ConnectionMessageRequest,
+) -> dict[str, Any]:
+    _require_admin(request)
+    connection = connection_store.get_connection(connection_id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Connection request not found.")
+    if connection["status"] != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Messages can only be sent to approved conversations.",
+        )
+    message = connection_store.add_message(connection_id, "admin", body.message)
+    if message is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Messages can only be sent to approved conversations.",
+        )
+    return message
+
+
+@app.delete("/v1/admin/connections/{connection_id}")
+@limiter.limit("30/minute")
+def admin_delete_connection(request: Request, connection_id: int) -> Response:
+    _require_admin(request)
+    if not connection_store.delete_connection(connection_id):
+        raise HTTPException(status_code=404, detail="Connection request not found.")
+    return Response(status_code=204)
+
+
+@app.get("/v1/connect/status")
+@limiter.limit("30/minute")
+def visitor_connection_status(request: Request) -> dict[str, Any]:
+    visitor_id = _visitor_id(request, allow_missing=True)
+    if visitor_id is None:
+        return {"status": "not_requested", "messages": []}
+    connection = connection_store.visitor_connection(visitor_id)
+    if connection is None:
+        return {"status": "not_requested", "messages": []}
+    messages = connection_store.list_messages(connection["id"])
+    return {
+        key: value
+        for key, value in {**connection, "messages": messages}.items()
+        if key != "visitor_id"
+    }
+
+
+@app.post("/v1/connect/requests")
+@limiter.limit("5/hour")
+def create_connection_request(
+    request: Request,
+    body: ConnectionRequest,
+) -> JSONResponse:
+    visitor_id = _visitor_id(request, allow_missing=True) or secrets.token_urlsafe(32)
+    signature = _session_signature(visitor_id, "visitor")
+    display_name = body.display_name or "Visitor"
+    try:
+        connection = connection_store.create_request(
+            visitor_id,
+            display_name,
+            body.message,
+        )
+    except DuplicateConnectionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response = JSONResponse(
+        {key: value for key, value in connection.items() if key != "visitor_id"},
+        headers={"Cache-Control": "no-store"},
+    )
+    response.set_cookie(
+        "iris_visitor",
+        f"{visitor_id}.{signature}",
+        max_age=365 * 24 * 60 * 60,
+        httponly=True,
+        secure=_secure_cookie(request),
+        samesite="strict",
+        path="/v1/connect",
+    )
+    return response
+
+
+@app.get("/v1/connect/messages")
+@limiter.limit("30/minute")
+def visitor_list_messages(
+    request: Request,
+    after_id: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    visitor_id = _require_visitor_id(request)
+    connection = connection_store.visitor_connection(visitor_id)
+    if connection is None:
+        return []
+    return connection_store.list_messages(connection["id"], after_id)
+
+
+@app.post("/v1/connect/messages")
+@limiter.limit("30/minute")
+def visitor_send_message(
+    request: Request,
+    body: ConnectionMessageRequest,
+) -> dict[str, Any]:
+    visitor_id = _require_visitor_id(request)
+    connection = connection_store.visitor_connection(visitor_id)
+    if connection is None or connection["status"] != "approved":
+        raise HTTPException(
+            status_code=403,
+            detail="An approved owner conversation is required.",
+        )
+    message = connection_store.add_message(
+        connection["id"],
+        "visitor",
+        body.message,
+    )
+    if message is None:
+        raise HTTPException(
+            status_code=409,
+            detail="An approved owner conversation is required.",
+        )
+    return message
 
 
 @app.get("/healthz")
@@ -532,6 +912,7 @@ def home() -> str:
         --accent: #a78bfa;
       }
       * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
       body {
         margin: 0;
         min-height: 100vh;
@@ -614,6 +995,65 @@ def home() -> str:
       }
       .new-chat:hover { border-color: #806bc1; background: #1d1a2a; }
       .new-chat:active { transform: scale(.985); }
+      .connect-owner {
+        width: 100%;
+        min-height: 42px;
+        margin-top: 9px;
+        border: 1px solid #9d85e45c;
+        border-radius: 11px;
+        background: #8e6bd21a;
+        color: #e4dcff;
+        cursor: pointer;
+      }
+      .connect-owner:hover { border-color: #b7a1ff; background: #9a7ee22b; }
+      .topbar-actions { display: flex; align-items: center; gap: 12px; }
+      .topbar-connect {
+        min-height: 36px;
+        padding: 0 12px;
+        border: 1px solid #9d85e45c;
+        border-radius: 10px;
+        background: #8e6bd21a;
+        color: #e4dcff;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      .topbar-connect:hover { border-color: #b7a1ff; background: #9a7ee22b; }
+      #owner-connect-dialog {
+        width: min(560px, calc(100vw - 28px));
+        max-height: min(80vh, 720px);
+        overflow: hidden;
+        padding: 0;
+        border: 1px solid #ffffff25;
+        border-radius: 20px;
+        background: #11121df2;
+        color: #f4f5fb;
+        box-shadow: 0 30px 100px #000b;
+        backdrop-filter: blur(22px);
+      }
+      #owner-connect-dialog::backdrop { background: #05060bcc; backdrop-filter: blur(5px); }
+      .connect-dialog-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; padding: 20px 22px 14px; border-bottom: 1px solid #ffffff17; }
+      .connect-dialog-head h2 { margin: 0; font-size: 18px; }
+      .connect-dialog-head p { margin: 6px 0 0; color: #a5a7b6; font-size: 12px; line-height: 1.5; }
+      #close-owner-chat { width: 34px; height: 34px; border: 1px solid #ffffff20; border-radius: 10px; background: #ffffff0a; cursor: pointer; }
+      #connection-state { min-height: 24px; margin: 14px 22px 0; color: #c2b2fa; font-size: 12px; }
+      #connection-request-form, #connection-message-form { display: flex; flex-direction: column; align-items: stretch; gap: 10px; margin: 0; padding: 14px 22px 20px; border: 0; background: transparent; box-shadow: none; }
+      #connection-request-form input, #connection-request-form textarea, #connection-message-form textarea {
+        width: 100%;
+        min-height: 42px;
+        max-height: 130px;
+        padding: 10px 12px;
+        border: 1px solid #ffffff20;
+        border-radius: 11px;
+        background: #090a12b8;
+        color: inherit;
+      }
+      #connection-request-form textarea, #connection-message-form textarea { resize: vertical; }
+      #connection-request-form button, #connection-message-form button { align-self: flex-end; min-height: 38px; padding: 0 14px; border: 1px solid #b49aff65; border-radius: 10px; background: #7458b6; color: white; cursor: pointer; }
+      #connection-request-form button:disabled, #connection-message-form button:disabled { opacity: .6; cursor: wait; }
+      #connection-transcript { max-height: 36vh; overflow-y: auto; display: flex; flex-direction: column; gap: 9px; padding: 10px 22px; }
+      .connection-bubble { max-width: 86%; align-self: flex-start; border: 1px solid #ffffff20; border-radius: 12px 12px 12px 4px; padding: 9px 12px; background: #ffffff0c; font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .connection-bubble.owner { align-self: flex-end; border-color: #b49aff65; background: #654c9d7a; }
+      .connection-empty { margin: 8px 0; color: #898da3; font-size: 12px; }
       .side-label {
         margin: 30px 9px 11px;
         color: #666b7d;
@@ -863,6 +1303,8 @@ def home() -> str:
         main { min-height: 100dvh; }
         .topbar { min-height: 60px; padding: 0 18px; }
         .topbar-title { max-width: 70%; font-size: 12px; line-height: 1.5; }
+        .topbar-actions { gap: 7px; }
+        .topbar-connect { padding: 0 9px; font-size: 11px; }
         .content { padding: 18px; }
         #welcome { padding: 38px 18px; border-radius: 22px; }
         .welcome-copy { font-size: 14px; }
@@ -890,6 +1332,7 @@ def home() -> str:
           <div><div class="brand-name">The IRIS</div><div class="brand-caption">Personal Assistant of Adarsh Dwivedi</div></div>
         </div>
         <button class="new-chat" id="new-chat" type="button"><span aria-hidden="true">＋</span> New conversation</button>
+        <button class="connect-owner" type="button" data-open-owner-chat>Chat with Adarsh</button>
         <div class="side-label">Made for momentum</div>
         <div class="side-note"><span aria-hidden="true">✳</span><span>Explore ideas and get clear, useful answers.</span></div>
         <div class="side-note"><span aria-hidden="true">⌘</span><span>Research, write, plan, and build in one place.</span></div>
@@ -899,7 +1342,10 @@ def home() -> str:
       <main>
         <header class="topbar">
           <div class="topbar-title">The IRIS - Personal Assistant of Adarsh Dwivedi</div>
-          <div class="status"><span class="status-dot" aria-hidden="true"></span>Here to help</div>
+          <div class="topbar-actions">
+            <button class="topbar-connect" type="button" data-open-owner-chat>Chat with Adarsh</button>
+            <div class="status"><span class="status-dot" aria-hidden="true"></span>Here to help</div>
+          </div>
         </header>
         <div class="content">
           <section id="welcome" aria-labelledby="welcome-title">
@@ -934,6 +1380,26 @@ def home() -> str:
         </div>
       </main>
     </div>
+    <dialog id="owner-connect-dialog" aria-labelledby="owner-connect-title">
+      <div class="connect-dialog-head">
+        <div>
+          <h2 id="owner-connect-title">Connect with Adarsh</h2>
+          <p>Send a private request. Your conversation starts only if Adarsh approves it.</p>
+        </div>
+        <button id="close-owner-chat" type="button" aria-label="Close private chat">×</button>
+      </div>
+      <p id="connection-state" role="status">Send a short message to request a private conversation.</p>
+      <form id="connection-request-form">
+        <input id="visitor-name" type="text" maxlength="80" autocomplete="nickname" placeholder="Your name (optional)">
+        <textarea id="connection-request-message" rows="3" maxlength="2000" placeholder="What would you like to talk about?" required></textarea>
+        <button type="submit">Request a conversation</button>
+      </form>
+      <div id="connection-transcript" aria-live="polite" hidden></div>
+      <form id="connection-message-form" hidden>
+        <textarea id="connection-message" rows="2" maxlength="2000" placeholder="Write a private message…" required></textarea>
+        <button type="submit">Send</button>
+      </form>
+    </dialog>
     <script>
       const chat = document.getElementById("chat");
       const form = document.getElementById("prompt-form");
@@ -1088,6 +1554,138 @@ def home() -> str:
             activeRequest = null;
             input.focus();
           }
+        }
+      });
+
+      const ownerChatDialog = document.getElementById("owner-connect-dialog");
+      const connectionState = document.getElementById("connection-state");
+      const connectionRequestForm = document.getElementById("connection-request-form");
+      const connectionRequestMessage = document.getElementById("connection-request-message");
+      const connectionMessageForm = document.getElementById("connection-message-form");
+      const connectionMessage = document.getElementById("connection-message");
+      const connectionTranscript = document.getElementById("connection-transcript");
+      let connectionPollTimer = null;
+      let connectionLastMessageId = 0;
+
+      function connectionApi(path, options = {}) {
+        return fetch(path, {
+          credentials: "same-origin",
+          ...options,
+          headers: {
+            ...(options.body ? { "Content-Type": "application/json" } : {}),
+            ...options.headers,
+          },
+        }).then(async (response) => {
+          const result = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            throw new Error(result.detail || `Request failed (${response.status})`);
+          }
+          return result;
+        });
+      }
+
+      function renderConnectionMessages(messages) {
+        for (const message of messages) {
+          const bubble = document.createElement("div");
+          bubble.className = `connection-bubble${message.sender === "admin" ? " owner" : ""}`;
+          bubble.textContent = message.content;
+          connectionTranscript.appendChild(bubble);
+          connectionLastMessageId = message.id;
+        }
+        if (messages.length) connectionTranscript.scrollTop = connectionTranscript.scrollHeight;
+      }
+
+      async function refreshOwnerConversation() {
+        if (!ownerChatDialog.open) return;
+        const connection = await connectionApi("/v1/connect/status");
+        connectionRequestForm.hidden =
+          connection.status === "pending" || connection.status === "approved";
+        connectionMessageForm.hidden = connection.status !== "approved";
+        connectionTranscript.hidden = connection.status === "not_requested";
+        if (connection.status === "not_requested") {
+          connectionState.textContent = "Send a short message to request a private conversation.";
+          return;
+        }
+        if (connection.status === "pending") {
+          connectionState.textContent = "Your request is waiting for Adarsh to review it.";
+        } else if (connection.status === "approved") {
+          connectionState.textContent = "Your private conversation is approved. Messages are only visible to you and Adarsh.";
+        } else if (connection.status === "declined") {
+          connectionState.textContent = "This request was declined. You can send another request below.";
+        } else {
+          connectionState.textContent = "This conversation is closed. You can request a new conversation below.";
+        }
+        const messages = await connectionApi(
+          `/v1/connect/messages?after_id=${connectionLastMessageId}`,
+        );
+        renderConnectionMessages(messages);
+      }
+
+      function openOwnerChat() {
+        if (!ownerChatDialog.open) ownerChatDialog.showModal();
+        refreshOwnerConversation().catch((error) => {
+          connectionState.textContent = error.message;
+        });
+        window.clearInterval(connectionPollTimer);
+        connectionPollTimer = window.setInterval(() => {
+          refreshOwnerConversation().catch((error) => {
+            connectionState.textContent = error.message;
+          });
+        }, 4000);
+      }
+
+      document.querySelectorAll("[data-open-owner-chat]").forEach((openButton) => {
+        openButton.addEventListener("click", openOwnerChat);
+      });
+      document.getElementById("close-owner-chat").addEventListener("click", () => {
+        ownerChatDialog.close();
+      });
+      ownerChatDialog.addEventListener("close", () => {
+        window.clearInterval(connectionPollTimer);
+        connectionPollTimer = null;
+      });
+
+      connectionRequestForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const requestButton = connectionRequestForm.querySelector("button");
+        requestButton.disabled = true;
+        connectionState.textContent = "Sending your request…";
+        try {
+          await connectionApi("/v1/connect/requests", {
+            method: "POST",
+            body: JSON.stringify({
+              display_name: document.getElementById("visitor-name").value.trim(),
+              message: connectionRequestMessage.value.trim(),
+            }),
+          });
+          connectionLastMessageId = 0;
+          connectionTranscript.replaceChildren();
+          connectionRequestMessage.value = "";
+          await refreshOwnerConversation();
+        } catch (error) {
+          connectionState.textContent = error.message;
+        } finally {
+          requestButton.disabled = false;
+        }
+      });
+
+      connectionMessageForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = connectionMessage.value.trim();
+        if (!message) return;
+        const sendButton = connectionMessageForm.querySelector("button");
+        sendButton.disabled = true;
+        try {
+          await connectionApi("/v1/connect/messages", {
+            method: "POST",
+            body: JSON.stringify({ message }),
+          });
+          connectionMessage.value = "";
+          await refreshOwnerConversation();
+        } catch (error) {
+          connectionState.textContent = error.message;
+        } finally {
+          sendButton.disabled = false;
         }
       });
     </script>

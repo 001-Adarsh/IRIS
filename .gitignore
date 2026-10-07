@@ -1,6 +1,7 @@
 .env
 .venv/
 data/owner_knowledge/
+data/live_connections.sqlite3*
 
 .env
 .venv
