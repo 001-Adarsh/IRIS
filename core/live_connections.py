@@ -2,7 +2,7 @@
 
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Generator
 
@@ -78,6 +78,18 @@ class LiveConnectionStore:
         return datetime.now(UTC).isoformat(timespec="seconds")
 
     @staticmethod
+    def _prune(connection: sqlite3.Connection) -> None:
+        cutoff = (datetime.now(UTC) - timedelta(days=10)).isoformat(timespec="seconds")
+        connection.execute(
+            "DELETE FROM connection_messages WHERE created_at < ?",
+            (cutoff,),
+        )
+        connection.execute(
+            "DELETE FROM connections WHERE updated_at < ?",
+            (cutoff,),
+        )
+
+    @staticmethod
     def _dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         return dict(row) if row is not None else None
 
@@ -90,6 +102,7 @@ class LiveConnectionStore:
         now = self._now()
         try:
             with self._connection() as connection:
+                self._prune(connection)
                 cursor = connection.execute(
                     """
                     INSERT INTO connections
@@ -121,6 +134,7 @@ class LiveConnectionStore:
 
     def visitor_connection(self, visitor_id: str) -> dict[str, Any] | None:
         with self._connection() as connection:
+            self._prune(connection)
             row = connection.execute(
                 """
                 SELECT * FROM connections
@@ -134,6 +148,7 @@ class LiveConnectionStore:
 
     def get_connection(self, connection_id: int) -> dict[str, Any] | None:
         with self._connection() as connection:
+            self._prune(connection)
             row = connection.execute(
                 "SELECT * FROM connections WHERE id = ?",
                 (connection_id,),
@@ -142,6 +157,7 @@ class LiveConnectionStore:
 
     def list_connections(self, status: str | None = None) -> list[dict[str, Any]]:
         with self._connection() as connection:
+            self._prune(connection)
             if status is None:
                 rows = connection.execute(
                     """
@@ -180,18 +196,22 @@ class LiveConnectionStore:
         self,
         connection_id: int,
         after_id: int = 0,
+        *,
+        limit: int | None = 200,
     ) -> list[dict[str, Any]]:
         with self._connection() as connection:
-            rows = connection.execute(
-                """
+            self._prune(connection)
+            query = """
                 SELECT id, sender, content, created_at
                 FROM connection_messages
                 WHERE connection_id = ? AND id > ?
                 ORDER BY id
-                LIMIT 200
-                """,
-                (connection_id, after_id),
-            ).fetchall()
+            """
+            parameters: tuple[int, ...] = (connection_id, after_id)
+            if limit is not None:
+                query += " LIMIT ?"
+                parameters += (limit,)
+            rows = connection.execute(query, parameters).fetchall()
         return [dict(row) for row in rows]
 
     def add_message(
@@ -202,6 +222,7 @@ class LiveConnectionStore:
     ) -> dict[str, Any] | None:
         now = self._now()
         with self._connection() as connection:
+            self._prune(connection)
             cursor = connection.execute(
                 """
                 INSERT INTO connection_messages
@@ -240,6 +261,7 @@ class LiveConnectionStore:
         expected_status: str,
     ) -> dict[str, Any] | None:
         with self._connection() as connection:
+            self._prune(connection)
             cursor = connection.execute(
                 """
                 UPDATE connections SET status = ?, updated_at = ?
@@ -257,6 +279,7 @@ class LiveConnectionStore:
 
     def delete_connection(self, connection_id: int) -> bool:
         with self._connection() as connection:
+            self._prune(connection)
             cursor = connection.execute(
                 "DELETE FROM connections WHERE id = ?",
                 (connection_id,),

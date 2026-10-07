@@ -32,6 +32,24 @@ returns a single synthesized answer. Configure `GROQ_API_KEY`,
 Use `@gemini <prompt>` or `@openrouter <prompt>` to route a request directly to
 one provider.
 
+### Email sign-in, saved chats, and image inspection
+
+Configure these Render environment variables to enable email sign-in and
+authenticated saved chats:
+
+- `IRIS_AUTH_SECRET`: a randomly generated secret of at least 32 characters.
+- `SENDGRID_API_KEY`: a SendGrid API key with Mail Send permission.
+- `IRIS_FROM_EMAIL`: a sender address verified with SendGrid.
+- `GEMINI_API_KEY`: required for screenshot and image inspection.
+
+Attach a persistent disk and set `IRIS_DATA_DIR` to its mount path (for example,
+`/var/data`). OTP challenges and saved conversations are stored in
+`chat_persistence.sqlite3`; owner conversations remain in
+`live_connections.sqlite3`. Sign-in codes expire after 10 minutes, saved chat
+threads and owner conversations expire after 10 days of inactivity, and each
+email account can keep up to five saved chats. Users must delete a saved chat
+before creating a sixth.
+
 ### Private owner conversations
 
 Visitors can choose **Chat with Adarsh** to send a private conversation request.

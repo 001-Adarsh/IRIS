@@ -1,6 +1,9 @@
+import sqlite3
 import os
 import tempfile
 import unittest
+from contextlib import closing
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -50,8 +53,22 @@ class TestLiveConnectionApi(unittest.TestCase):
         self.assertEqual(request.status_code, 200)
         self.assertEqual(request.json()["status"], "pending")
         self.assertNotIn("visitor_id", request.json())
+        self.assertTrue(request.json()["session_id"])
         self.assertIn("httponly", request.headers["set-cookie"].lower())
         self.assertIn("no-store", request.headers["cache-control"])
+        session_id = request.json()["session_id"]
+        history = self.client.get(
+            f"/api/adarsh-chat/history?session_id={session_id}"
+        )
+        self.assertEqual(history.status_code, 200)
+        self.assertEqual(history.json()[0]["content"], "Please help me with a project.")
+        self.assertTrue(history.json()[0]["timestamp"])
+        self.assertEqual(
+            self.client.get(
+                "/api/adarsh-chat/history?session_id=not-my-session"
+            ).status_code,
+            403,
+        )
 
         self.assertEqual(
             self.client.get("/v1/admin/connections").status_code,
@@ -97,9 +114,63 @@ class TestLiveConnectionApi(unittest.TestCase):
             [message["content"] for message in visitor_messages],
             ["Hello Adarsh", "Hello Taylor"],
         )
+        for index in range(201):
+            api_server.connection_store.add_message(
+                connection_id,
+                "admin",
+                f"Owner follow-up {index}",
+            )
+        owner_history = self.client.get(
+            f"/v1/admin/connections/{connection_id}/messages"
+        )
+        self.assertEqual(owner_history.status_code, 200)
+        self.assertEqual(len(owner_history.json()), 204)
         self.assertEqual(
             self.client.get("/v1/connect/status").json()["status"],
             "approved",
+        )
+
+    def test_owner_chat_history_expires_old_messages_and_idle_threads(self):
+        created = self.create_request("An old message.")
+        session_id = created.json()["session_id"]
+        self.sign_in()
+        connection = self.client.get("/v1/admin/connections?status=pending").json()[0]
+        connection_id = connection["id"]
+        self.client.post(
+            f"/v1/admin/connections/{connection_id}/decision",
+            json={"action": "approve"},
+        )
+        self.client.post("/v1/connect/messages", json={"message": "A recent message."})
+
+        expired_at = (datetime.now(UTC) - timedelta(days=11)).isoformat(
+            timespec="seconds"
+        )
+        with closing(sqlite3.connect(api_server.connection_store.database_path)) as database:
+            with database:
+                database.execute(
+                    """
+                    UPDATE connection_messages SET created_at = ?
+                    WHERE connection_id = ? AND content = 'An old message.'
+                    """,
+                    (expired_at, connection_id),
+                )
+        history = self.client.get(
+            f"/api/adarsh-chat/history?session_id={session_id}"
+        )
+        self.assertEqual(
+            [message["content"] for message in history.json()],
+            ["A recent message."],
+        )
+
+        with closing(sqlite3.connect(api_server.connection_store.database_path)) as database:
+            with database:
+                database.execute(
+                    "UPDATE connections SET updated_at = ? WHERE id = ?",
+                    (expired_at, connection_id),
+                )
+        self.assertEqual(
+            self.client.get("/v1/admin/connections").json(),
+            [],
         )
 
     def test_login_errors_decline_and_delete_behave_safely(self):

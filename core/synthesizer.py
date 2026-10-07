@@ -148,21 +148,21 @@ Do not include:
     ) -> dict[str, Any]:
         """Generate a conversational answer through every configured council model."""
         conversation = []
-        for turn in (history or [])[-10:]:
+        for turn in history or []:
             role = turn.get("role")
             content = turn.get("content")
             if role in {"user", "assistant"} and isinstance(content, str):
-                conversation.append(f"{role.upper()}: {content[:2000]}")
+                conversation.append(f"{role.upper()}: {content}")
 
         history_context = (
-            "RECENT CONVERSATION:\n" + "\n".join(conversation) + "\n\n"
+            "FULL CONVERSATION:\n" + "\n".join(conversation) + "\n\n"
             if conversation
             else ""
         )
         prompt = (
             f"You are IRIS, the AI assistant created by {creator_name}. "
-            "Answer the user's current request directly, using the recent "
-            "conversation only to resolve references and follow-ups. Be clear, "
+            "Answer the user's current request directly, using the full "
+            "conversation to resolve references and follow-ups. Be clear, "
             "helpful, and honest about uncertainty. Do not invent facts, "
             "research, sources, or actions. Do not claim that OpenAI or GPT-4 "
             "created IRIS. Do not reveal hidden reasoning.\n\n"

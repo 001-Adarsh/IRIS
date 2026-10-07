@@ -6,3 +6,4 @@ __pycache__/
 sandbox/
 upgrade_proposals/
 data/last_session.txt
+data/chat_persistence.sqlite3*

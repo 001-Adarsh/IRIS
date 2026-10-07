@@ -8,6 +8,8 @@ The public execution endpoint requires a local Docker daemon and a preloaded
 IRIS_SANDBOX_IMAGE; it fails closed when that sandbox is unavailable.
 """
 
+import base64
+import binascii
 import json
 import hashlib
 import hmac
@@ -44,6 +46,11 @@ from slowapi.util import get_remote_address
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
+from core.chat_persistence import (
+    ChatLimitReached,
+    ChatPersistence,
+    OTPResendTooSoon,
+)
 from core.executor import IRISExecutor
 from core.live_connections import DuplicateConnectionError, LiveConnectionStore
 from core.router import provider_response_failed
@@ -55,6 +62,9 @@ logger = logging.getLogger("iris.api")
 
 MAX_CODE_LENGTH = 20_000
 MAX_CAPTURE_BYTES = 256_000
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+CHAT_RETENTION_SECONDS = 10 * 24 * 60 * 60
+CHAT_TOKEN_TTL_SECONDS = CHAT_RETENTION_SECONDS
 SANDBOX_TIMEOUT_SECONDS = 10
 SANDBOX_IMAGE = os.getenv("IRIS_SANDBOX_IMAGE", "python:3.12-alpine")
 
@@ -71,7 +81,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.middleware("http")
 async def disable_private_message_caching(request: Request, call_next: Any) -> Response:
     response = await call_next(request)
-    if request.url.path.startswith(("/v1/admin", "/v1/connect")):
+    if request.url.path.startswith(("/v1/admin", "/v1/connect", "/auth", "/api")):
         response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -95,10 +105,13 @@ app.add_middleware(
     allow_origins=cors_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type", "X-IRIS-ADMIN-KEY"],
+    allow_headers=["Authorization", "Content-Type", "X-IRIS-ADMIN-KEY"],
 )
 
 synthesizer = AISynthesizer()
+chat_store = ChatPersistence(
+    Path(os.getenv("IRIS_DATA_DIR", Path(__file__).resolve().parent / "data"))
+)
 
 
 def _owner_profile() -> dict[str, Any]:
@@ -160,7 +173,7 @@ class PromptRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1, max_length=8_000)
-    history: list[ChatTurn] = Field(default_factory=list, max_length=10)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=2_000)
 
     @field_validator("prompt")
     @classmethod
@@ -169,6 +182,62 @@ class PromptRequest(BaseModel):
         if not value:
             raise ValueError("prompt must not be blank")
         return value
+
+
+def _validate_image_data(value: str | None) -> str | None:
+    if value is None:
+        return None
+    match = re.fullmatch(
+        r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/]*={0,2})",
+        value,
+    )
+    if match is None:
+        raise ValueError("image_data must be a PNG, JPEG, or WebP data URL")
+    try:
+        decoded = base64.b64decode(match.group(2), validate=True)
+    except binascii.Error as exc:
+        raise ValueError("image_data must contain valid base64 data") from exc
+    if not decoded or len(decoded) > MAX_IMAGE_BYTES:
+        raise ValueError("image_data must be smaller than 5 MB")
+    return value
+
+
+class EmailOTPRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        value = value.strip().casefold()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+            raise ValueError("Enter a valid email address.")
+        return value
+
+
+class VerifyOTPRequest(EmailOTPRequest):
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class ChatPromptRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str = Field(min_length=1, max_length=8_000)
+    image_data: str | None = Field(default=None, max_length=7_000_000)
+
+    @field_validator("prompt")
+    @classmethod
+    def prompt_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("prompt must not be blank")
+        return value
+
+    @field_validator("image_data")
+    @classmethod
+    def validate_image(cls, value: str | None) -> str | None:
+        return _validate_image_data(value)
 
 
 class CodeRequest(BaseModel):
@@ -418,6 +487,69 @@ def _session_signature(value: str, purpose: str) -> str:
     return hmac.new(key, value.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
+def _auth_secret_or_raise() -> bytes:
+    secret = os.getenv("IRIS_AUTH_SECRET", "").strip()
+    if len(secret) < 32:
+        raise HTTPException(
+            status_code=503,
+            detail="Email sign-in is not configured on this server.",
+        )
+    return secret.encode("utf-8")
+
+
+def _otp_digest(email: str, code: str) -> str:
+    return hmac.new(
+        _auth_secret_or_raise(),
+        f"iris-email-otp:v1:{email}:{code}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _issue_chat_token(email: str) -> str:
+    payload = json.dumps(
+        {
+            "sub": email,
+            "exp": int(time.time()) + CHAT_TOKEN_TTL_SECONDS,
+            "jti": secrets.token_urlsafe(16),
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(payload).rstrip(b"=").decode("ascii")
+    signature = hmac.new(
+        _auth_secret_or_raise(),
+        f"iris-chat-token:v1:{encoded}".encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _authenticated_email(authorization: str | None) -> str:
+    scheme, separator, token = (authorization or "").partition(" ")
+    if not separator or scheme.casefold() != "bearer":
+        raise HTTPException(status_code=401, detail="Sign in to access saved chats.")
+    try:
+        encoded, signature = token.split(".", 1)
+        expected = hmac.new(
+            _auth_secret_or_raise(),
+            f"iris-chat-token:v1:{encoded}".encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("invalid token signature")
+        payload = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        claims = json.loads(payload)
+        email = claims["sub"]
+        if (
+            not isinstance(email, str)
+            or claims["exp"] <= int(time.time())
+            or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email)
+        ):
+            raise ValueError("invalid token claims")
+        return email
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=401, detail="Your sign-in has expired.") from exc
+
+
 def _secure_cookie(request: Request) -> bool:
     return request.url.scheme == "https" or os.getenv("RENDER", "").lower() == "true"
 
@@ -475,7 +607,9 @@ def _send_owner_email_notification(display_name: str, message: str) -> None:
 
 
 def _visitor_id(request: Request, *, allow_missing: bool = False) -> str | None:
-    token = request.cookies.get("iris_visitor")
+    token = request.cookies.get("iris_visitor") or request.cookies.get(
+        "iris_visitor_history"
+    )
     if token is None and allow_missing:
         return None
     if token is None:
@@ -499,6 +633,22 @@ def _require_visitor_id(request: Request) -> str:
     if visitor_id is None:
         raise HTTPException(status_code=401, detail="Visitor session is required.")
     return visitor_id
+
+
+def _set_visitor_history_cookie(
+    request: Request,
+    response: Response,
+    visitor_id: str,
+) -> None:
+    response.set_cookie(
+        "iris_visitor_history",
+        f"{visitor_id}.{_session_signature(visitor_id, 'visitor')}",
+        max_age=365 * 24 * 60 * 60,
+        httponly=True,
+        secure=_secure_cookie(request),
+        samesite="strict",
+        path="/api/adarsh-chat",
+    )
 
 
 def _require_admin(request: Request) -> None:
@@ -652,7 +802,7 @@ def admin_list_messages(
     _require_admin(request)
     if connection_store.get_connection(connection_id) is None:
         raise HTTPException(status_code=404, detail="Connection request not found.")
-    return connection_store.list_messages(connection_id, after_id)
+    return connection_store.list_messages(connection_id, after_id, limit=None)
 
 
 @app.post("/v1/admin/connections/{connection_id}/messages")
@@ -691,17 +841,29 @@ def admin_delete_connection(request: Request, connection_id: int) -> Response:
 
 @app.get("/v1/connect/status")
 @limiter.limit("30/minute")
-def visitor_connection_status(request: Request) -> dict[str, Any]:
+def visitor_connection_status(
+    request: Request,
+    response: Response,
+) -> dict[str, Any]:
     visitor_id = _visitor_id(request, allow_missing=True)
     if visitor_id is None:
         return {"status": "not_requested", "messages": []}
+    _set_visitor_history_cookie(request, response, visitor_id)
     connection = connection_store.visitor_connection(visitor_id)
     if connection is None:
-        return {"status": "not_requested", "messages": []}
+        return {
+            "status": "not_requested",
+            "messages": [],
+            "session_id": visitor_id,
+        }
     messages = connection_store.list_messages(connection["id"])
     return {
         key: value
-        for key, value in {**connection, "messages": messages}.items()
+        for key, value in {
+            **connection,
+            "messages": messages,
+            "session_id": visitor_id,
+        }.items()
         if key != "visitor_id"
     }
 
@@ -730,7 +892,10 @@ def create_connection_request(
         body.message,
     )
     response = JSONResponse(
-        {key: value for key, value in connection.items() if key != "visitor_id"},
+        {
+            **{key: value for key, value in connection.items() if key != "visitor_id"},
+            "session_id": visitor_id,
+        },
         headers={"Cache-Control": "no-store"},
     )
     response.set_cookie(
@@ -742,6 +907,7 @@ def create_connection_request(
         samesite="strict",
         path="/v1/connect",
     )
+    _set_visitor_history_cookie(request, response, visitor_id)
     return response
 
 
@@ -756,6 +922,34 @@ def visitor_list_messages(
     if connection is None:
         return []
     return connection_store.list_messages(connection["id"], after_id)
+
+
+@app.get("/api/adarsh-chat/history")
+@limiter.limit("30/minute")
+def adarsh_chat_history(
+    request: Request,
+    session_id: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
+    after_id: int = Query(default=0, ge=0),
+) -> list[dict[str, Any]]:
+    visitor_id = _require_visitor_id(request)
+    if session_id is not None and not hmac.compare_digest(session_id, visitor_id):
+        raise HTTPException(status_code=403, detail="This chat session is not yours.")
+    connection = connection_store.visitor_connection(visitor_id)
+    if connection is None:
+        return []
+    return [
+        {**message, "timestamp": message["created_at"]}
+        for message in connection_store.list_messages(
+            connection["id"],
+            after_id,
+            limit=None,
+        )
+    ]
 
 
 @app.post("/v1/connect/messages")
@@ -788,6 +982,266 @@ def visitor_send_message(
         body.message,
     )
     return message
+
+
+@app.post("/auth/send-otp")
+@limiter.limit("5/hour")
+def send_email_otp(request: Request, body: EmailOTPRequest) -> dict[str, str]:
+    api_key = os.getenv("SENDGRID_API_KEY", "").strip()
+    sender = os.getenv("IRIS_FROM_EMAIL", "").strip()
+    if not api_key or not sender:
+        raise HTTPException(
+            status_code=503,
+            detail="Email sign-in is not configured on this server.",
+        )
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    now = int(time.time())
+    try:
+        chat_store.issue_otp(body.email, _otp_digest(body.email, code), now)
+    except OTPResendTooSoon as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Please wait a minute before requesting another code.",
+        ) from exc
+
+    try:
+        response = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "personalizations": [
+                    {
+                        "to": [{"email": body.email}],
+                        "subject": "Your IRIS sign-in code",
+                    }
+                ],
+                "from": {"email": sender, "name": "IRIS"},
+                "content": [
+                    {
+                        "type": "text/plain",
+                        "value": (
+                            f"Your IRIS sign-in code is {code}.\n\n"
+                            "It expires in 10 minutes. If you did not request "
+                            "this code, you can ignore this email."
+                        ),
+                    }
+                ],
+            },
+            timeout=8,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        chat_store.remove_otp(body.email)
+        logger.exception("Could not send an IRIS sign-in email.")
+        raise HTTPException(
+            status_code=502,
+            detail="The sign-in email could not be sent. Please try again later.",
+        ) from exc
+    return {"message": "A sign-in code has been sent if the email is deliverable."}
+
+
+@app.post("/auth/verify-otp")
+@limiter.limit("10/minute")
+def verify_email_otp(request: Request, body: VerifyOTPRequest) -> dict[str, str]:
+    if not chat_store.verify_otp(
+        body.email,
+        _otp_digest(body.email, body.code),
+        int(time.time()),
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="That sign-in code is invalid or expired.",
+        )
+    return {
+        "token": _issue_chat_token(body.email),
+        "email": body.email,
+    }
+
+
+@app.get("/api/chats")
+def list_saved_chats(
+    authorization: str | None = Header(default=None),
+) -> list[dict[str, Any]]:
+    email = _authenticated_email(authorization)
+    return chat_store.list_threads(email, int(time.time()))
+
+
+@app.post("/api/chats")
+def create_saved_chat(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    email = _authenticated_email(authorization)
+    try:
+        return chat_store.create_thread(email, uuid.uuid4().hex, int(time.time()))
+    except ChatLimitReached as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="All five saved chat slots are in use. Delete a chat before starting another.",
+        ) from exc
+
+
+@app.get("/api/chats/{thread_id}")
+def get_saved_chat(
+    thread_id: str,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    email = _authenticated_email(authorization)
+    history = chat_store.get_history(email, thread_id, int(time.time()))
+    if history is None:
+        raise HTTPException(status_code=404, detail="Saved chat not found.")
+    return {"id": thread_id, "messages": history}
+
+
+@app.delete("/api/chats/{thread_id}")
+def delete_saved_chat(
+    thread_id: str,
+    authorization: str | None = Header(default=None),
+) -> Response:
+    email = _authenticated_email(authorization)
+    if not chat_store.delete_thread(email, thread_id):
+        raise HTTPException(status_code=404, detail="Saved chat not found.")
+    return Response(status_code=204)
+
+
+@app.post("/api/chats/{thread_id}/stream")
+@limiter.limit("20/minute")
+def stream_saved_chat(
+    request: Request,
+    thread_id: str,
+    body: ChatPromptRequest,
+    authorization: str | None = Header(default=None),
+) -> StreamingResponse:
+    email = _authenticated_email(authorization)
+    previous_history = chat_store.get_history(email, thread_id, int(time.time()))
+    if previous_history is None:
+        raise HTTPException(status_code=404, detail="Saved chat not found.")
+    stored_user = chat_store.append_message(
+        email,
+        thread_id,
+        "user",
+        body.prompt,
+        body.image_data,
+        int(time.time()),
+    )
+    if stored_user is None:
+        raise HTTPException(status_code=404, detail="Saved chat not found.")
+    full_history = [*previous_history, {
+        "role": "user",
+        "content": body.prompt,
+        "image_data": body.image_data,
+    }]
+
+    def generate_events() -> Iterator[str]:
+        try:
+            answer = _identity_reply(body.prompt) if body.image_data is None else None
+            if answer is None and any(turn.get("image_data") for turn in full_history):
+                provider = synthesizer.router.providers.get("gemini")
+                if provider is None or not getattr(provider, "available", False):
+                    raise RuntimeError(
+                        "Image inspection is unavailable: configure GEMINI_API_KEY."
+                    )
+                yield _sse_event("status", {"message": "Inspecting the image…"})
+                answer = provider.generate_multimodal(full_history)
+            elif answer is None:
+                available = synthesizer.router.get_available_providers()
+                if not available:
+                    raise RuntimeError("No AI providers are configured on this server.")
+                direct_route = re.match(
+                    r"^@(groq|gemini|openrouter|ollama)\b(?:\s+(.*))?$",
+                    body.prompt,
+                    flags=re.IGNORECASE | re.DOTALL,
+                )
+                if direct_route:
+                    provider_name = direct_route.group(1).lower()
+                    provider_prompt = (direct_route.group(2) or "").strip()
+                    provider = synthesizer.router.providers[provider_name]
+                    if not provider_prompt:
+                        raise ValueError("Add a prompt after the provider name.")
+                    if not getattr(provider, "available", False):
+                        raise ValueError("That assistant route is not configured.")
+                    prior_context = "\n".join(
+                        f"{turn['role'].upper()}: {turn['content']}"
+                        for turn in previous_history
+                    )
+                    prompt = (
+                        f"FULL CONVERSATION:\n{prior_context}\n\n"
+                        f"CURRENT REQUEST:\n{provider_prompt}"
+                        if prior_context
+                        else provider_prompt
+                    )
+                    yield _sse_event("status", {"message": "Working on your request…"})
+                    answer = provider.generate(prompt)
+                    if (
+                        not answer
+                        or not str(answer).strip()
+                        or provider_response_failed(answer)
+                    ):
+                        raise RuntimeError(
+                            "The selected assistant route could not return a usable answer."
+                        )
+                else:
+                    yield _sse_event(
+                        "status",
+                        {"message": "IRIS Council is comparing available models…"},
+                    )
+                    result = synthesizer.synthesize_chat(
+                        re.sub(
+                            r"^@(council|compare)\s*",
+                            "",
+                            body.prompt,
+                            flags=re.IGNORECASE,
+                        ).strip(),
+                        previous_history,
+                        creator_name=_owner_profile()["name"],
+                    )
+                    answer = result.get("answer", "")
+                    if not result.get("providers"):
+                        raise RuntimeError(
+                            "IRIS Council could not get a usable answer from any configured model."
+                        )
+            if not isinstance(answer, str) or not answer.strip():
+                raise RuntimeError("IRIS could not return a usable response.")
+            answer = answer.strip()
+            stored_answer = chat_store.append_message(
+                email,
+                thread_id,
+                "assistant",
+                answer,
+                None,
+                int(time.time()),
+            )
+            if stored_answer is None:
+                raise RuntimeError(
+                    "This saved chat was deleted before the response completed."
+                )
+            yield _sse_event("token", {"token": answer})
+            yield _sse_event("done", {"done": True})
+        except (RuntimeError, ValueError) as exc:
+            yield _sse_event("error", {"error": str(exc)})
+        except Exception:
+            logger.exception("Saved IRIS chat generation failed")
+            yield _sse_event(
+                "error",
+                {
+                    "error": (
+                        "IRIS could not complete the request. Check provider "
+                        "configuration and server logs."
+                    )
+                },
+            )
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/healthz")
@@ -1086,6 +1540,43 @@ def home() -> str:
       }
       .new-chat:hover { border-color: #806bc1; background: #1d1a2a; }
       .new-chat:active { transform: scale(.985); }
+      #chat-list { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+      .saved-chat {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        border: 1px solid transparent;
+        border-radius: 10px;
+      }
+      .saved-chat[aria-current="true"] { border-color: #b7a1ff55; background: #9a7ee21b; }
+      .saved-chat-title {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        padding: 9px 10px;
+        border: 0;
+        background: transparent;
+        color: #d8d7e3;
+        text-align: left;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        cursor: pointer;
+      }
+      .saved-chat-delete {
+        width: 32px;
+        height: 32px;
+        margin-right: 4px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #9a9caf;
+        cursor: pointer;
+      }
+      .saved-chat-delete:hover { background: #6d2d3b66; color: #ffd0d0; }
+      #chat-list-status { min-height: 18px; margin: 8px 4px 0; color: #d5b7ff; font-size: 11px; line-height: 1.45; }
+      .account-box { margin-top: auto; padding: 14px 8px 0; border-top: 1px solid #ffffff17; color: #a9aabd; font-size: 11px; overflow-wrap: anywhere; }
+      .account-box button { margin-top: 8px; border: 0; background: transparent; color: #d2c5ff; cursor: pointer; }
       .connect-owner {
         width: 100%;
         min-height: 42px;
@@ -1346,6 +1837,44 @@ def home() -> str:
         overflow-wrap: anywhere;
         font-size: 14px;
       }
+      .message-image {
+        display: block;
+        max-width: min(100%, 360px);
+        max-height: 300px;
+        margin-top: 8px;
+        border: 1px solid #ffffff2b;
+        border-radius: 10px;
+        object-fit: contain;
+      }
+      #attachment-preview {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: fit-content;
+        max-width: 100%;
+        margin: 0 0 9px 2px;
+        padding: 7px;
+        border: 1px solid #ffffff25;
+        border-radius: 12px;
+        background: #11121df2;
+      }
+      #attachment-preview img { width: 54px; height: 54px; border-radius: 8px; object-fit: cover; }
+      #attachment-name { max-width: 190px; overflow: hidden; color: #c6c4d3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+      #remove-attachment { width: 30px; height: 30px; border: 1px solid #ffffff20; border-radius: 9px; background: #ffffff0c; cursor: pointer; }
+      #attach-image, #auth-trigger {
+        flex: 0 0 38px;
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        border: 1px solid #ffffff1c;
+        border-radius: 11px;
+        background: #ffffff08;
+        color: #d7cafa;
+        cursor: pointer;
+      }
+      #attach-image:hover, #auth-trigger:hover { border-color: #b7a1ff80; background: #9a7ee21b; }
+      #image-file { display: none; }
       .assistant .msg {
         border: 1px solid #ffffff20;
         border-top-left-radius: 5px;
@@ -1438,6 +1967,36 @@ def home() -> str:
         backdrop-filter: blur(18px);
       }
       #emoji-picker[hidden] { display: none; }
+      #auth-dialog {
+        width: min(430px, calc(100vw - 28px));
+        padding: 24px;
+        border: 1px solid #ffffff25;
+        border-radius: 20px;
+        background: #11121df5;
+        color: #f4f5fb;
+        box-shadow: 0 30px 100px #000b;
+      }
+      #auth-dialog::backdrop { background: #05060bcc; backdrop-filter: blur(5px); }
+      #auth-dialog h2 { margin: 0; font-size: 20px; }
+      #auth-dialog p { color: #a5a7b6; font-size: 13px; line-height: 1.55; }
+      #auth-email-form, #auth-code-form {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+        backdrop-filter: none;
+      }
+      #auth-dialog label { color: #c8c8d5; font-size: 12px; text-align: left; }
+      #auth-email, #auth-code { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #ffffff25; border-radius: 10px; background: #090a12; color: inherit; }
+      #auth-email-form button, #auth-code-form button { min-height: 42px; border: 1px solid #b49aff65; border-radius: 10px; background: #7458b6; cursor: pointer; }
+      #auth-code-form button[type="button"] { background: #ffffff0c; color: #d7cafa; }
+      #auth-status { min-height: 18px; color: #c6b3ff !important; }
+      #chat-list-toggle { display: none; }
       .emoji-option {
         width: 36px;
         height: 36px;
@@ -1475,11 +2034,20 @@ def home() -> str:
       @media (max-width: 720px) {
         .app { grid-template-columns: 1fr; }
         aside { display: none; }
+        .app.sidebar-open aside {
+          position: fixed;
+          z-index: 10;
+          inset: 0 auto 0 0;
+          width: min(300px, 86vw);
+          display: flex;
+          box-shadow: 12px 0 50px #0008;
+        }
         main { height: 100dvh; min-height: 0; }
         .topbar { min-height: 60px; padding: 0 18px; }
         .topbar-title { max-width: 70%; font-size: 12px; line-height: 1.5; }
         .topbar-actions { gap: 7px; }
         .topbar-connect { padding: 0 9px; font-size: 11px; }
+        #chat-list-toggle { display: grid; flex: 0 0 34px; width: 34px; height: 34px; place-items: center; border: 1px solid #ffffff20; border-radius: 9px; background: #ffffff08; cursor: pointer; }
         .content { padding: 18px; }
         #welcome { padding: 38px 18px; border-radius: 22px; }
         .welcome-copy { font-size: 14px; }
@@ -1509,6 +2077,9 @@ def home() -> str:
           <div><div class="brand-name">The IRIS</div><div class="brand-caption">Personal Assistant of Adarsh Dwivedi</div></div>
         </div>
         <button class="new-chat" id="new-chat" type="button"><span aria-hidden="true">＋</span> New conversation</button>
+        <div class="side-label">Your chats <span id="chat-count">0 / 5</span></div>
+        <div id="chat-list" aria-label="Saved conversations"></div>
+        <p id="chat-list-status" role="status"></p>
         <button class="connect-owner" type="button" data-open-owner-chat>
           Chat with Adarsh
           <span class="owner-online-badge" data-owner-online hidden>
@@ -1520,17 +2091,23 @@ def home() -> str:
         <div class="side-note"><span aria-hidden="true">⌘</span><span>Research, write, plan, and build in one place.</span></div>
         <div class="side-note"><span aria-hidden="true">↗</span><span>Ask a follow-up whenever you need more.</span></div>
         <div class="side-footer"><strong>IRIS</strong> · Intelligent Routing &amp; Iterative Synthesis<br>Created by Adarsh Dwivedi</div>
+        <div class="account-box">
+          <span id="account-email">Sign in to save conversations</span><br>
+          <button id="signout-button" type="button" hidden>Sign out</button>
+        </div>
       </aside>
       <main>
         <header class="topbar">
           <div class="topbar-title">The IRIS - Personal Assistant of Adarsh Dwivedi</div>
           <div class="topbar-actions">
+            <button id="chat-list-toggle" type="button" aria-label="Show saved chats" aria-expanded="false">☰</button>
             <button class="topbar-connect" type="button" data-open-owner-chat>
               Chat with Adarsh
               <span class="owner-online-badge" data-owner-online hidden>
                 <span class="owner-online-dot" aria-hidden="true"></span>Online now
               </span>
             </button>
+            <button id="auth-trigger" type="button" aria-label="Sign in with email">↗</button>
             <div class="status"><span class="status-dot" aria-hidden="true"></span>Here to help</div>
           </div>
         </header>
@@ -1556,8 +2133,15 @@ def home() -> str:
           </section>
           <section id="chat" aria-live="polite" aria-label="Conversation"></section>
           <div class="composer-wrap">
+            <div id="attachment-preview" hidden>
+              <img id="attachment-thumbnail" alt="Image attachment preview">
+              <span id="attachment-name"></span>
+              <button id="remove-attachment" type="button" aria-label="Remove attachment">×</button>
+            </div>
             <form id="prompt-form">
-              <textarea id="prompt" rows="1" maxlength="8000" aria-label="Your message" placeholder="Message IRIS…" required></textarea>
+              <input id="image-file" type="file" accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp">
+              <textarea id="prompt" rows="1" maxlength="8000" aria-label="Your message" placeholder="Message IRIS…"></textarea>
+              <button id="attach-image" type="button" aria-label="Attach an image">📎</button>
               <button id="emoji-trigger" type="button" aria-label="Insert emoji" aria-expanded="false" aria-controls="emoji-picker">☺</button>
               <div id="emoji-picker" role="group" aria-label="Choose an emoji" hidden>
                 <button class="emoji-option" type="button" aria-label="Smiling face">😀</button>
@@ -1584,6 +2168,22 @@ def home() -> str:
         </div>
       </main>
     </div>
+    <dialog id="auth-dialog" aria-labelledby="auth-title">
+      <h2 id="auth-title">Sign in to IRIS</h2>
+      <p>Use your email to save up to five chats and continue them across visits. Your conversations are retained for 10 days.</p>
+      <form id="auth-email-form">
+        <label for="auth-email">Email address</label>
+        <input id="auth-email" type="email" maxlength="254" autocomplete="email" required placeholder="you@example.com">
+        <button type="submit">Email me a sign-in code</button>
+      </form>
+      <form id="auth-code-form" hidden>
+        <label for="auth-code">6-digit sign-in code</label>
+        <input id="auth-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+        <button type="submit">Verify and continue</button>
+        <button id="auth-back-button" type="button">Change email or request another code</button>
+      </form>
+      <p id="auth-status" role="status"></p>
+    </dialog>
     <dialog id="owner-connect-dialog" aria-labelledby="owner-connect-title">
       <div class="connect-dialog-head">
         <div>
@@ -1611,10 +2211,31 @@ def home() -> str:
       const button = document.getElementById("send");
       const welcome = document.getElementById("welcome");
       const newChatButton = document.getElementById("new-chat");
+      const chatList = document.getElementById("chat-list");
+      const chatCount = document.getElementById("chat-count");
+      const chatListStatus = document.getElementById("chat-list-status");
+      const authDialog = document.getElementById("auth-dialog");
+      const authEmailForm = document.getElementById("auth-email-form");
+      const authCodeForm = document.getElementById("auth-code-form");
+      const authStatus = document.getElementById("auth-status");
+      const authEmail = document.getElementById("auth-email");
+      const authCode = document.getElementById("auth-code");
+      const accountEmail = document.getElementById("account-email");
+      const signoutButton = document.getElementById("signout-button");
+      const imageFile = document.getElementById("image-file");
+      const attachmentPreview = document.getElementById("attachment-preview");
+      const attachmentThumbnail = document.getElementById("attachment-thumbnail");
+      const attachmentName = document.getElementById("attachment-name");
+      const CACHE_TTL = 10 * 24 * 60 * 60 * 1000;
       const conversationHistory = [];
+      let authToken = localStorage.getItem("iris_auth_token") || "";
+      let signedInEmail = localStorage.getItem("iris_auth_email") || "";
+      let activeThreadId = "";
+      let savedThreads = [];
+      let attachedImage = null;
       let activeRequest = null;
 
-      function addMessage(text, kind) {
+      function addMessage(text, kind, imageData = null) {
         const row = document.createElement("div");
         row.className = `message-row ${kind}`;
         if (kind === "assistant") {
@@ -1627,22 +2248,336 @@ def home() -> str:
         const message = document.createElement("div");
         message.className = "msg";
         message.textContent = text;
+        if (imageData) {
+          const image = document.createElement("img");
+          image.className = "message-image";
+          image.src = imageData;
+          image.alt = "Attached image";
+          message.appendChild(image);
+        }
         row.appendChild(message);
         chat.appendChild(row);
         chat.scrollTop = chat.scrollHeight;
         return message;
       }
 
-      newChatButton.addEventListener("click", () => {
+      function cacheKey(threadId) {
+        return `iris-chat-cache:${signedInEmail}:${threadId}`;
+      }
+
+      function saveLocalCache() {
+        if (!activeThreadId || !signedInEmail) return;
+        try {
+          localStorage.setItem(
+            cacheKey(activeThreadId),
+            JSON.stringify({ savedAt: Date.now(), messages: conversationHistory }),
+          );
+          localStorage.setItem("iris_active_chat", activeThreadId);
+        } catch (error) {
+          chatListStatus.textContent = `Local history cache unavailable: ${error.message}`;
+        }
+      }
+
+      function getFreshLocalCache(threadId) {
+        try {
+          const saved = JSON.parse(localStorage.getItem(cacheKey(threadId)) || "null");
+          if (saved && Date.now() - saved.savedAt < CACHE_TTL) return saved;
+        } catch (_) {
+          return null;
+        }
+        return null;
+      }
+
+      function renderHistory(messages, saveCache = true) {
+        chat.replaceChildren();
+        conversationHistory.splice(
+          0,
+          conversationHistory.length,
+          ...messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+            image_data: message.image_data || null,
+          })),
+        );
+        for (const message of conversationHistory) {
+          addMessage(
+            message.content,
+            message.role === "assistant" ? "assistant" : "user",
+            message.image_data,
+          );
+        }
+        welcome.hidden = conversationHistory.length > 0;
+        if (saveCache) saveLocalCache();
+      }
+
+      async function chatApi(path, options = {}) {
+        const headers = { ...(options.headers || {}) };
+        if (authToken) headers.Authorization = `Bearer ${authToken}`;
+        if (options.body) headers["Content-Type"] = "application/json";
+        const response = await fetch(path, { ...options, headers });
+        if (response.status === 401 && authToken) {
+          signOut(false);
+          if (!authDialog.open) authDialog.showModal();
+        }
+        if (response.status === 204) return null;
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(payload.detail || `Request failed (${response.status})`);
+        }
+        return payload;
+      }
+
+      function renderSavedChats() {
+        chatList.replaceChildren();
+        chatCount.textContent = `${savedThreads.length} / 5`;
+        for (const thread of savedThreads) {
+          const item = document.createElement("div");
+          item.className = "saved-chat";
+          item.setAttribute("aria-current", String(thread.id === activeThreadId));
+          const title = document.createElement("button");
+          title.className = "saved-chat-title";
+          title.type = "button";
+          title.textContent = thread.title || "New conversation";
+          title.title = title.textContent;
+          title.addEventListener("click", () => {
+            selectThread(thread.id).catch((error) => {
+              chatListStatus.textContent = error.message;
+            });
+          });
+          const remove = document.createElement("button");
+          remove.className = "saved-chat-delete";
+          remove.type = "button";
+          remove.textContent = "×";
+          remove.setAttribute("aria-label", `Delete ${title.textContent}`);
+          remove.addEventListener("click", async () => {
+            if (!window.confirm(`Delete "${title.textContent}" and its messages?`)) return;
+            try {
+              await chatApi(`/api/chats/${encodeURIComponent(thread.id)}`, {
+                method: "DELETE",
+              });
+              localStorage.removeItem(cacheKey(thread.id));
+              savedThreads = savedThreads.filter((entry) => entry.id !== thread.id);
+              if (activeThreadId === thread.id) {
+                activeThreadId = "";
+                conversationHistory.length = 0;
+                chat.replaceChildren();
+                welcome.hidden = false;
+                if (savedThreads.length) await selectThread(savedThreads[0].id);
+                else await createThread();
+              } else {
+                renderSavedChats();
+              }
+              chatListStatus.textContent = "";
+            } catch (error) {
+              chatListStatus.textContent = error.message;
+            }
+          });
+          item.append(title, remove);
+          chatList.appendChild(item);
+        }
+      }
+
+      async function refreshSavedChats() {
+        savedThreads = await chatApi("/api/chats");
+        renderSavedChats();
+      }
+
+      async function selectThread(threadId) {
+        activeThreadId = threadId;
+        localStorage.setItem("iris_active_chat", threadId);
+        chatListStatus.textContent = "";
+        try {
+          const result = await chatApi(`/api/chats/${encodeURIComponent(threadId)}`);
+          renderHistory(result.messages);
+        } catch (error) {
+          const cached = getFreshLocalCache(threadId);
+          if (!cached) throw error;
+          renderHistory(cached.messages, false);
+          chatListStatus.textContent = "Showing a recent local copy; server sync is unavailable.";
+        }
+        renderSavedChats();
+        document.querySelector(".app").classList.remove("sidebar-open");
+        document.getElementById("chat-list-toggle").setAttribute("aria-expanded", "false");
+      }
+
+      async function createThread() {
+        if (!authToken) {
+          if (!authDialog.open) authDialog.showModal();
+          return;
+        }
+        closeEmojiPicker();
+        input.value = "";
+        input.style.height = "40px";
+        try {
+          const created = await chatApi("/api/chats", { method: "POST" });
+          savedThreads.unshift(created);
+          await selectThread(created.id);
+        } catch (error) {
+          chatListStatus.textContent = error.message;
+        }
+      }
+
+      async function initializeChats() {
+        if (!authToken) {
+          if (!authDialog.open) authDialog.showModal();
+          return;
+        }
+        accountEmail.textContent = signedInEmail;
+        signoutButton.hidden = false;
+        try {
+          await refreshSavedChats();
+          const preferred = localStorage.getItem("iris_active_chat");
+          const selected = savedThreads.find((thread) => thread.id === preferred) || savedThreads[0];
+          if (selected) await selectThread(selected.id);
+          else await createThread();
+        } catch (error) {
+          const cachedThread = localStorage.getItem("iris_active_chat");
+          const cached = cachedThread ? getFreshLocalCache(cachedThread) : null;
+          if (cached && cachedThread) {
+            activeThreadId = cachedThread;
+            renderHistory(cached.messages, false);
+            chatListStatus.textContent = `Offline copy loaded. ${error.message}`;
+          } else {
+            chatListStatus.textContent = error.message;
+          }
+        }
+      }
+
+      function signOut(showStatus = true) {
         if (activeRequest) activeRequest.abort();
         activeRequest = null;
-        closeEmojiPicker();
-        button.disabled = false;
-        chat.replaceChildren();
+        localStorage.removeItem("iris_auth_token");
+        localStorage.removeItem("iris_auth_email");
+        authToken = "";
+        signedInEmail = "";
+        activeThreadId = "";
+        savedThreads = [];
         conversationHistory.length = 0;
-        welcome.hidden = false;
+        chat.replaceChildren();
         input.value = "";
-        input.focus();
+        attachedImage = null;
+        attachmentPreview.hidden = true;
+        attachmentThumbnail.removeAttribute("src");
+        button.disabled = false;
+        newChatButton.disabled = false;
+        renderSavedChats();
+        accountEmail.textContent = "Sign in to save conversations";
+        signoutButton.hidden = true;
+        welcome.hidden = false;
+        if (showStatus) {
+          authStatus.textContent = "You have signed out.";
+          if (!authDialog.open) authDialog.showModal();
+        }
+      }
+
+      document.getElementById("auth-trigger").addEventListener("click", () => {
+        if (!authDialog.open) authDialog.showModal();
+      });
+      document.getElementById("auth-back-button").addEventListener("click", () => {
+        authCodeForm.hidden = true;
+        authEmailForm.hidden = false;
+        authCode.value = "";
+        authEmail.focus();
+      });
+      authEmailForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        authStatus.textContent = "Sending your sign-in code…";
+        try {
+          await chatApi("/auth/send-otp", {
+            method: "POST",
+            body: JSON.stringify({ email: authEmail.value.trim() }),
+          });
+          authEmailForm.hidden = true;
+          authCodeForm.hidden = false;
+          authCode.focus();
+          authStatus.textContent = "Check your email. The code expires in 10 minutes.";
+        } catch (error) {
+          authStatus.textContent = error.message;
+        }
+      });
+      authCodeForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        authStatus.textContent = "Verifying your code…";
+        try {
+          const result = await chatApi("/auth/verify-otp", {
+            method: "POST",
+            body: JSON.stringify({
+              email: authEmail.value.trim(),
+              code: authCode.value.trim(),
+            }),
+          });
+          authToken = result.token;
+          signedInEmail = result.email;
+          localStorage.setItem("iris_auth_token", authToken);
+          localStorage.setItem("iris_auth_email", signedInEmail);
+          authStatus.textContent = "";
+          authCodeForm.hidden = true;
+          authEmailForm.hidden = false;
+          authDialog.close();
+          await initializeChats();
+        } catch (error) {
+          authStatus.textContent = error.message;
+        }
+      });
+      signoutButton.addEventListener("click", () => signOut());
+      document.getElementById("chat-list-toggle").addEventListener("click", (event) => {
+        const app = document.querySelector(".app");
+        const opening = !app.classList.contains("sidebar-open");
+        app.classList.toggle("sidebar-open", opening);
+        event.currentTarget.setAttribute("aria-expanded", String(opening));
+      });
+      newChatButton.addEventListener("click", createThread);
+
+      function setAttachedImage(file) {
+        const extension = file.name.split(".").pop().toLowerCase();
+        const allowedTypes = {
+          png: "image/png",
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          webp: "image/webp",
+        };
+        const mimeType = allowedTypes[extension];
+        if (!mimeType || (file.type && file.type !== mimeType)) {
+          chatListStatus.textContent = "Choose a PNG, JPG, JPEG, or WebP image.";
+          return;
+        }
+        if (!file.size || file.size > 5 * 1024 * 1024) {
+          chatListStatus.textContent = "Images must be smaller than 5 MB.";
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          attachedImage = { data: reader.result, name: file.name };
+          attachmentThumbnail.src = reader.result;
+          attachmentName.textContent = file.name;
+          attachmentPreview.hidden = false;
+          chatListStatus.textContent = "";
+        };
+        reader.onerror = () => {
+          chatListStatus.textContent = "The selected image could not be read.";
+        };
+        reader.readAsDataURL(file);
+      }
+
+      document.getElementById("attach-image").addEventListener("click", () => imageFile.click());
+      imageFile.addEventListener("change", () => {
+        if (imageFile.files.length) setAttachedImage(imageFile.files[0]);
+        imageFile.value = "";
+      });
+      document.getElementById("remove-attachment").addEventListener("click", () => {
+        attachedImage = null;
+        attachmentPreview.hidden = true;
+        attachmentThumbnail.removeAttribute("src");
+      });
+      form.addEventListener("paste", (event) => {
+        const imageItem = [...(event.clipboardData?.items || [])]
+          .find((item) => item.type.startsWith("image/"));
+        if (!imageItem) return;
+        const file = imageItem.getAsFile();
+        if (file) {
+          event.preventDefault();
+          setAttachedImage(file);
+        }
       });
 
       document.querySelectorAll("[data-prompt]").forEach((suggestion) => {
@@ -1668,12 +2603,31 @@ def home() -> str:
 
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        const prompt = input.value.trim();
+        const prompt = input.value.trim() ||
+          (attachedImage ? "Please inspect this image for UI bugs, errors, or anomalies." : "");
         if (!prompt || button.disabled) return;
+        if (!authToken) {
+          if (!authDialog.open) authDialog.showModal();
+          return;
+        }
+        if (!activeThreadId) {
+          await createThread();
+          if (!activeThreadId) return;
+        }
 
         closeEmojiPicker();
         welcome.hidden = true;
-        addMessage(prompt, "user");
+        const image = attachedImage;
+        conversationHistory.push({
+          role: "user",
+          content: prompt,
+          image_data: image ? image.data : null,
+        });
+        addMessage(prompt, "user", image ? image.data : null);
+        saveLocalCache();
+        attachedImage = null;
+        attachmentPreview.hidden = true;
+        attachmentThumbnail.removeAttribute("src");
         input.value = "";
         input.style.height = "40px";
         input.style.overflowY = "hidden";
@@ -1683,20 +2637,29 @@ def home() -> str:
         activeRequest = controller;
         const answer = addMessage("", "assistant");
         let hasToken = false;
-        let historyStored = false;
         let streamError = "";
         try {
-          const response = await fetch("/v1/chat/stream", {
+          const response = await fetch(
+            `/api/chats/${encodeURIComponent(activeThreadId)}/stream`,
+            {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${authToken}`,
+            },
             body: JSON.stringify({
               prompt,
-              history: conversationHistory.slice(-10),
+              image_data: image ? image.data : null,
             }),
             signal: controller.signal,
-          });
+            },
+          );
           if (!response.ok) {
             let detail = `Request failed (${response.status})`;
+            if (response.status === 401) {
+              signOut(false);
+              if (!authDialog.open) authDialog.showModal();
+            }
             try {
               const body = await response.json();
               if (body.detail) detail = body.detail;
@@ -1722,18 +2685,12 @@ def home() -> str:
               if (!hasToken) answer.textContent = "";
               hasToken = true;
               answer.textContent += payload.token;
-              if (!historyStored) {
-                conversationHistory.push(
-                  { role: "user", content: prompt },
-                  { role: "assistant", content: "" },
-                );
-                historyStored = true;
-              }
-              conversationHistory[conversationHistory.length - 1].content =
-                answer.textContent;
-              if (conversationHistory.length > 10) {
-                conversationHistory.splice(0, conversationHistory.length - 10);
-              }
+              conversationHistory.push({
+                role: "assistant",
+                content: answer.textContent,
+                image_data: null,
+              });
+              saveLocalCache();
               if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < 96) {
                 chat.scrollTop = chat.scrollHeight;
               }
@@ -1753,6 +2710,8 @@ def home() -> str:
             }
           }
           if (streamError) throw new Error(streamError);
+          if (!hasToken) throw new Error("IRIS returned no response.");
+          await refreshSavedChats();
         } catch (error) {
           if (error.name !== "AbortError") {
             answer.parentElement.classList.add("error");
@@ -1827,6 +2786,8 @@ def home() -> str:
       const connectionTranscript = document.getElementById("connection-transcript");
       let connectionPollTimer = null;
       let connectionLastMessageId = 0;
+      let connectionSessionId = "";
+      let connectionMessages = [];
       async function refreshOwnerPresence() {
         try {
           const response = await fetch("/v1/presence", { cache: "no-store" });
@@ -1868,6 +2829,7 @@ def home() -> str:
           bubble.className = `connection-bubble${message.sender === "admin" ? " owner" : ""}`;
           bubble.textContent = message.content;
           connectionTranscript.appendChild(bubble);
+          connectionMessages.push(message);
           connectionLastMessageId = message.id;
         }
         if (messages.length) connectionTranscript.scrollTop = connectionTranscript.scrollHeight;
@@ -1876,6 +2838,15 @@ def home() -> str:
       async function refreshOwnerConversation() {
         if (!ownerChatDialog.open) return;
         const connection = await connectionApi("/v1/connect/status");
+        if (connection.session_id) {
+          localStorage.setItem("iris_adarsh_chat_session", connection.session_id);
+          if (connectionSessionId !== connection.session_id) {
+            connectionSessionId = connection.session_id;
+            connectionLastMessageId = 0;
+            connectionMessages = [];
+            connectionTranscript.replaceChildren();
+          }
+        }
         connectionRequestForm.hidden =
           connection.status === "pending" || connection.status === "approved";
         connectionMessageForm.hidden = connection.status !== "approved";
@@ -1893,10 +2864,40 @@ def home() -> str:
         } else {
           connectionState.textContent = "This conversation is closed. You can request a new conversation below.";
         }
-        const messages = await connectionApi(
-          `/v1/connect/messages?after_id=${connectionLastMessageId}`,
-        );
-        renderConnectionMessages(messages);
+        const sessionId = localStorage.getItem("iris_adarsh_chat_session");
+        const requestedAfterId = connectionLastMessageId;
+        const params = new URLSearchParams({ after_id: String(requestedAfterId) });
+        if (sessionId) params.set("session_id", sessionId);
+        try {
+          const messages = await connectionApi(
+            `/api/adarsh-chat/history?${params.toString()}`,
+          );
+          renderConnectionMessages(messages);
+          if (messages.length || requestedAfterId === 0) {
+            localStorage.setItem(
+              `iris-adarsh-chat-cache:${sessionId || connection.id}`,
+              JSON.stringify({ savedAt: Date.now(), messages: connectionMessages }),
+            );
+          }
+        } catch (error) {
+          let cached = null;
+          try {
+            cached = JSON.parse(
+              localStorage.getItem(
+                `iris-adarsh-chat-cache:${sessionId || connection.id}`,
+              ) || "null",
+            );
+          } catch (_) {}
+          if (cached && Date.now() - cached.savedAt < CACHE_TTL) {
+            connectionTranscript.replaceChildren();
+            connectionLastMessageId = 0;
+            connectionMessages = [];
+            renderConnectionMessages(cached.messages);
+            connectionState.textContent = "Showing a recent local copy; server history is unavailable.";
+          } else {
+            throw error;
+          }
+        }
       }
 
       function openOwnerChat() {
@@ -1929,14 +2930,19 @@ def home() -> str:
         requestButton.disabled = true;
         connectionState.textContent = "Sending your request…";
         try {
-          await connectionApi("/v1/connect/requests", {
+          const created = await connectionApi("/v1/connect/requests", {
             method: "POST",
             body: JSON.stringify({
               display_name: document.getElementById("visitor-name").value.trim(),
               message: connectionRequestMessage.value.trim(),
             }),
           });
+          if (created.session_id) {
+            localStorage.setItem("iris_adarsh_chat_session", created.session_id);
+            connectionSessionId = created.session_id;
+          }
           connectionLastMessageId = 0;
+          connectionMessages = [];
           connectionTranscript.replaceChildren();
           connectionRequestMessage.value = "";
           await refreshOwnerConversation();
@@ -1966,6 +2972,8 @@ def home() -> str:
           sendButton.disabled = false;
         }
       });
+
+      initializeChats();
     </script>
   </body>
 </html>"""

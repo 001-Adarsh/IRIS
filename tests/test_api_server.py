@@ -1,12 +1,16 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
 import api_server
 from core.executor import IRISExecutor
+from core.chat_persistence import ChatPersistence
 from core.synthesizer import AISynthesizer
+from providers.gemini_provider import GeminiProvider
 from providers.groq_provider import GroqProvider
 
 
@@ -76,6 +80,49 @@ class TestGroqStreaming(unittest.TestCase):
         self.assertTrue(post.call_args.kwargs["json"]["stream"])
 
 
+class TestGeminiMultimodal(unittest.TestCase):
+    def test_image_and_full_turn_history_are_sent_to_a_vision_model(self):
+        response = MagicMock()
+        response.json.return_value = {
+            "candidates": [
+                {"content": {"parts": [{"text": "The error is a missing import."}]}}
+            ]
+        }
+        provider = GeminiProvider()
+        history = [
+            {"role": "user", "content": "Here is a screenshot.", "image_data": None},
+            {
+                "role": "assistant",
+                "content": "I can inspect it.",
+                "image_data": None,
+            },
+            {
+                "role": "user",
+                "content": "What is this traceback?",
+                "image_data": "data:image/png;base64,aGVsbG8=",
+            },
+        ]
+
+        with (
+            patch.dict(os.environ, {"GEMINI_API_KEY": "test-gemini-key"}),
+            patch(
+                "providers.gemini_provider.requests.post",
+                return_value=response,
+            ) as post,
+        ):
+            answer = provider.generate_multimodal(history)
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(answer, "The error is a missing import.")
+        self.assertIn("gemini-2.5-flash:generateContent", post.call_args.args[0])
+        self.assertEqual(len(payload["contents"]), 3)
+        self.assertEqual(
+            payload["contents"][2]["parts"][1]["inline_data"],
+            {"mime_type": "image/png", "data": "aGVsbG8="},
+        )
+        self.assertIn("root cause", payload["system_instruction"]["parts"][0]["text"])
+
+
 class TestChatSynthesis(unittest.TestCase):
     def test_chat_synthesis_forces_council_and_preserves_context(self):
         synthesizer = AISynthesizer()
@@ -101,6 +148,23 @@ class TestChatSynthesis(unittest.TestCase):
             synthesizer.router.compare.call_args.kwargs["mode"],
             "force_council",
         )
+
+    def test_chat_synthesis_keeps_history_beyond_the_previous_ten_turn_limit(self):
+        synthesizer = AISynthesizer()
+        synthesizer.router.compare = MagicMock(
+            return_value={"final": "Answer", "providers": ["groq"]}
+        )
+        history = [
+            {"role": "user", "content": f"Question {index}"}
+            for index in range(15)
+        ]
+
+        synthesizer.synthesize_chat("Follow up", history)
+
+        prompt = synthesizer.router.compare.call_args.args[0]
+        self.assertIn("USER: Question 0", prompt)
+        self.assertIn("USER: Question 14", prompt)
+        self.assertIn("FULL CONVERSATION:", prompt)
 
 
 class TestPublicApi(unittest.TestCase):
@@ -134,8 +198,12 @@ class TestPublicApi(unittest.TestCase):
         self.assertNotIn("council-meta", response.text)
         self.assertNotIn("GROQ", response.text)
         self.assertNotIn("OPENROUTER", response.text)
-        self.assertIn("conversationHistory.slice(-10)", response.text)
-        self.assertIn("/v1/chat/stream", response.text)
+        self.assertIn("iris-chat-cache:", response.text)
+        self.assertIn("Date.now() - saved.savedAt < CACHE_TTL", response.text)
+        self.assertIn("/api/chats/", response.text)
+        self.assertIn("/auth/send-otp", response.text)
+        self.assertIn("/auth/verify-otp", response.text)
+        self.assertIn('accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"', response.text)
         self.assertIn("Chat with Adarsh", response.text)
         self.assertIn("/v1/connect/requests", response.text)
         self.assertIn("height: 100dvh", response.text)
@@ -145,6 +213,158 @@ class TestPublicApi(unittest.TestCase):
         self.assertIn('id="emoji-picker"', response.text)
         self.assertIn("emojiSelectionStart", response.text)
         self.assertIn("document.addEventListener(\"click\"", response.text)
+
+
+class TestAuthenticatedChatApi(unittest.TestCase):
+    def setUp(self):
+        api_server.limiter.reset()
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.original_store = api_server.chat_store
+        api_server.chat_store = ChatPersistence(Path(self.temp_dir.name))
+        self.client = TestClient(api_server.app)
+        self.environment = patch.dict(
+            os.environ,
+            {
+                "IRIS_AUTH_SECRET": "test-auth-secret-long-enough-for-hmac-32",
+                "SENDGRID_API_KEY": "test-sendgrid-key",
+                "IRIS_FROM_EMAIL": "no-reply@example.com",
+            },
+        )
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+
+    def tearDown(self):
+        api_server.chat_store = self.original_store
+        self.temp_dir.cleanup()
+
+    def _signed_in_client(self, email="person@example.com"):
+        with (
+            patch.object(api_server.secrets, "randbelow", return_value=7),
+            patch(
+                "api_server.requests.post",
+                return_value=MagicMock(status_code=202),
+            ) as send_email,
+        ):
+            sent = self.client.post("/auth/send-otp", json={"email": email})
+        self.assertEqual(sent.status_code, 200)
+        self.assertIn("000007", send_email.call_args.kwargs["json"]["content"][0]["value"])
+        verified = self.client.post(
+            "/auth/verify-otp",
+            json={"email": email, "code": "000007"},
+        )
+        self.assertEqual(verified.status_code, 200)
+        return {"Authorization": f"Bearer {verified.json()['token']}"}
+
+    def test_email_otp_issues_a_signed_token_for_saved_chat_apis(self):
+        headers = self._signed_in_client("Person@Example.com")
+        self.assertEqual(
+            self.client.get("/api/chats", headers=headers).json(),
+            [],
+        )
+        created = self.client.post("/api/chats", headers=headers)
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["title"], "New conversation")
+        self.assertEqual(
+            self.client.get(
+                f"/api/chats/{created.json()['id']}",
+                headers=headers,
+            ).json()["messages"],
+            [],
+        )
+
+    def test_otp_is_one_time_and_rejected_after_wrong_attempts(self):
+        with patch.object(api_server.secrets, "randbelow", return_value=7), patch(
+            "api_server.requests.post",
+            return_value=MagicMock(status_code=202),
+        ):
+            self.client.post("/auth/send-otp", json={"email": "person@example.com"})
+        wrong = self.client.post(
+            "/auth/verify-otp",
+            json={"email": "person@example.com", "code": "000008"},
+        )
+        self.assertEqual(wrong.status_code, 401)
+        correct = self.client.post(
+            "/auth/verify-otp",
+            json={"email": "person@example.com", "code": "000007"},
+        )
+        self.assertEqual(correct.status_code, 200)
+        reused = self.client.post(
+            "/auth/verify-otp",
+            json={"email": "person@example.com", "code": "000007"},
+        )
+        self.assertEqual(reused.status_code, 401)
+
+    def test_sixth_chat_requires_deleting_an_existing_thread(self):
+        headers = self._signed_in_client()
+        created = [
+            self.client.post("/api/chats", headers=headers).json()
+            for _ in range(5)
+        ]
+        sixth = self.client.post("/api/chats", headers=headers)
+        self.assertEqual(sixth.status_code, 409)
+        self.client.delete(f"/api/chats/{created[0]['id']}", headers=headers)
+        self.assertEqual(
+            self.client.post("/api/chats", headers=headers).status_code,
+            200,
+        )
+
+    def test_saved_chat_stream_persists_full_context_and_image(self):
+        headers = self._signed_in_client()
+        created = self.client.post("/api/chats", headers=headers).json()
+        thread_id = created["id"]
+        api_server.chat_store.append_message(
+            "person@example.com",
+            thread_id,
+            "user",
+            "Earlier question",
+            None,
+            int(api_server.time.time()),
+        )
+        api_server.chat_store.append_message(
+            "person@example.com",
+            thread_id,
+            "assistant",
+            "Earlier answer",
+            None,
+            int(api_server.time.time()),
+        )
+        vision = MagicMock(available=True)
+        vision.generate_multimodal.return_value = "The screenshot shows a traceback."
+        with patch.dict(
+            api_server.synthesizer.router.providers,
+            {"gemini": vision},
+            clear=False,
+        ):
+            response = self.client.post(
+                f"/api/chats/{thread_id}/stream",
+                headers=headers,
+                json={
+                    "prompt": "What is the error?",
+                    "image_data": "data:image/png;base64,aGVsbG8=",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("The screenshot shows a traceback.", response.text)
+        vision.generate_multimodal.assert_called_once()
+        self.assertEqual(
+            [turn["content"] for turn in vision.generate_multimodal.call_args.args[0]],
+            ["Earlier question", "Earlier answer", "What is the error?"],
+        )
+        history = self.client.get(
+            f"/api/chats/{thread_id}",
+            headers=headers,
+        ).json()["messages"]
+        self.assertEqual(len(history), 4)
+        self.assertEqual(history[-2]["image_data"], "data:image/png;base64,aGVsbG8=")
+        self.assertTrue(history[-1]["timestamp"])
+
+    def test_saved_chat_tokens_cannot_read_other_users_threads(self):
+        first = self._signed_in_client("one@example.com")
+        second = self._signed_in_client("two@example.com")
+        thread = self.client.post("/api/chats", headers=first).json()
+        response = self.client.get(f"/api/chats/{thread['id']}", headers=second)
+        self.assertEqual(response.status_code, 404)
 
     def test_owner_portrait_is_served_as_png(self):
         response = self.client.get("/assets/adarsh-dwivedi.png")
