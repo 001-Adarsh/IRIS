@@ -166,7 +166,13 @@ class ChatTurn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=2_000)
+    content: str = Field(min_length=1, max_length=8_000)
+    image_data: str | None = Field(default=None, max_length=7_000_000)
+
+    @field_validator("image_data")
+    @classmethod
+    def validate_image(cls, value: str | None) -> str | None:
+        return _validate_image_data(value)
 
 
 class PromptRequest(BaseModel):
@@ -174,6 +180,7 @@ class PromptRequest(BaseModel):
 
     prompt: str = Field(min_length=1, max_length=8_000)
     history: list[ChatTurn] = Field(default_factory=list, max_length=2_000)
+    image_data: str | None = Field(default=None, max_length=7_000_000)
 
     @field_validator("prompt")
     @classmethod
@@ -182,6 +189,11 @@ class PromptRequest(BaseModel):
         if not value:
             raise ValueError("prompt must not be blank")
         return value
+
+    @field_validator("image_data")
+    @classmethod
+    def validate_image(cls, value: str | None) -> str | None:
+        return _validate_image_data(value)
 
 
 def _validate_image_data(value: str | None) -> str | None:
@@ -1252,7 +1264,10 @@ def health_check() -> dict[str, str]:
 @app.post("/v1/chat/stream")
 @public_rate_limit
 def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
-    identity_reply = _identity_reply(body.prompt)
+    has_image_context = bool(
+        body.image_data or any(turn.image_data for turn in body.history)
+    )
+    identity_reply = _identity_reply(body.prompt) if not has_image_context else None
     if identity_reply is not None:
         return StreamingResponse(
             iter(
@@ -1270,6 +1285,29 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
 
     def generate_events() -> Iterator[str]:
         try:
+            if has_image_context:
+                provider = synthesizer.router.providers.get("gemini")
+                if provider is None or not getattr(provider, "available", False):
+                    raise RuntimeError(
+                        "Image inspection is unavailable: configure GEMINI_API_KEY."
+                    )
+                history = [
+                    turn.model_dump()
+                    for turn in body.history
+                ]
+                history.append(
+                    {
+                        "role": "user",
+                        "content": body.prompt,
+                        "image_data": body.image_data,
+                    }
+                )
+                yield _sse_event("status", {"message": "Inspecting the image…"})
+                answer = provider.generate_multimodal(history)
+                yield _sse_event("token", {"token": answer})
+                yield _sse_event("done", {"done": True})
+                return
+
             available = synthesizer.router.get_available_providers()
             direct_route = re.match(
                 r"^@(groq|gemini|openrouter|ollama)\b(?:\s+(.*))?$",
@@ -1354,6 +1392,8 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
                     {"token": answer},
                 )
             yield _sse_event("done", {"done": True})
+        except (RuntimeError, ValueError) as exc:
+            yield _sse_event("error", {"error": str(exc)})
         except Exception:
             logger.exception("IRIS chat stream failed")
             yield _sse_event(
@@ -1995,6 +2035,11 @@ def home() -> str:
       #auth-email, #auth-code { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid #ffffff25; border-radius: 10px; background: #090a12; color: inherit; }
       #auth-email-form button, #auth-code-form button { min-height: 42px; border: 1px solid #b49aff65; border-radius: 10px; background: #7458b6; cursor: pointer; }
       #auth-code-form button[type="button"] { background: #ffffff0c; color: #d7cafa; }
+      .guest-option { margin-top: 16px; text-align: center; }
+      .guest-option > span { display: block; margin-bottom: 9px; color: #626577; }
+      #continue-as-guest { min-height: 40px; padding: 0 15px; border: 1px solid #ffffff25; border-radius: 10px; background: #ffffff0a; color: #e2dafa; cursor: pointer; }
+      #continue-as-guest:hover { border-color: #b7a1ff80; background: #9a7ee21b; }
+      .guest-option p { margin: 9px 0 0; font-size: 11px !important; }
       #auth-status { min-height: 18px; color: #c6b3ff !important; }
       #chat-list-toggle { display: none; }
       .emoji-option {
@@ -2176,6 +2221,11 @@ def home() -> str:
         <input id="auth-email" type="email" maxlength="254" autocomplete="email" required placeholder="you@example.com">
         <button type="submit">Email me a sign-in code</button>
       </form>
+      <div class="guest-option">
+        <span aria-hidden="true">—</span>
+        <button id="continue-as-guest" type="button">Continue without signing in</button>
+        <p>Your chat stays in this browser only; signing in saves it to your account.</p>
+      </div>
       <form id="auth-code-form" hidden>
         <label for="auth-code">6-digit sign-in code</label>
         <input id="auth-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
@@ -2230,6 +2280,8 @@ def home() -> str:
       const conversationHistory = [];
       let authToken = localStorage.getItem("iris_auth_token") || "";
       let signedInEmail = localStorage.getItem("iris_auth_email") || "";
+      let guestMode =
+        !authToken && localStorage.getItem("iris_chat_mode") === "guest";
       let activeThreadId = "";
       let savedThreads = [];
       let attachedImage = null;
@@ -2262,17 +2314,20 @@ def home() -> str:
       }
 
       function cacheKey(threadId) {
-        return `iris-chat-cache:${signedInEmail}:${threadId}`;
+        return `iris-chat-cache:${signedInEmail || "guest"}:${threadId}`;
       }
 
       function saveLocalCache() {
-        if (!activeThreadId || !signedInEmail) return;
+        if (!activeThreadId || (!signedInEmail && !guestMode)) return;
         try {
           localStorage.setItem(
             cacheKey(activeThreadId),
             JSON.stringify({ savedAt: Date.now(), messages: conversationHistory }),
           );
-          localStorage.setItem("iris_active_chat", activeThreadId);
+          localStorage.setItem(
+            guestMode ? "iris_guest_active_chat" : "iris_active_chat",
+            activeThreadId,
+          );
         } catch (error) {
           chatListStatus.textContent = `Local history cache unavailable: ${error.message}`;
         }
@@ -2329,7 +2384,11 @@ def home() -> str:
 
       function renderSavedChats() {
         chatList.replaceChildren();
-        chatCount.textContent = `${savedThreads.length} / 5`;
+        chatCount.textContent = guestMode ? "Guest" : `${savedThreads.length} / 5`;
+        if (guestMode) {
+          chatListStatus.textContent = "Guest chat is stored only in this browser.";
+          return;
+        }
         for (const thread of savedThreads) {
           const item = document.createElement("div");
           item.className = "saved-chat";
@@ -2401,7 +2460,22 @@ def home() -> str:
       }
 
       async function createThread() {
-        if (!authToken) {
+        if (guestMode) {
+          closeEmojiPicker();
+          activeThreadId = `guest-${crypto.randomUUID()}`;
+          conversationHistory.length = 0;
+          chat.replaceChildren();
+          input.value = "";
+          input.style.height = "40px";
+          welcome.hidden = false;
+          localStorage.setItem("iris_guest_active_chat", activeThreadId);
+          chatListStatus.textContent = "Guest chat is stored only in this browser.";
+          saveLocalCache();
+          renderSavedChats();
+          input.focus();
+          return;
+        }
+        if (!authToken && !guestMode) {
           if (!authDialog.open) authDialog.showModal();
           return;
         }
@@ -2419,9 +2493,29 @@ def home() -> str:
 
       async function initializeChats() {
         if (!authToken) {
+          if (guestMode) {
+            const savedThread = localStorage.getItem("iris_guest_active_chat");
+            const cached = savedThread ? getFreshLocalCache(savedThread) : null;
+            accountEmail.textContent = "Guest · saved in this browser";
+            signoutButton.hidden = true;
+            savedThreads = [];
+            if (cached && savedThread) {
+              activeThreadId = savedThread;
+              renderHistory(cached.messages, false);
+            } else {
+              activeThreadId = `guest-${crypto.randomUUID()}`;
+              localStorage.setItem("iris_guest_active_chat", activeThreadId);
+              conversationHistory.length = 0;
+              chat.replaceChildren();
+              welcome.hidden = false;
+            }
+            renderSavedChats();
+            return;
+          }
           if (!authDialog.open) authDialog.showModal();
           return;
         }
+        guestMode = false;
         accountEmail.textContent = signedInEmail;
         signoutButton.hidden = false;
         try {
@@ -2448,8 +2542,10 @@ def home() -> str:
         activeRequest = null;
         localStorage.removeItem("iris_auth_token");
         localStorage.removeItem("iris_auth_email");
+        localStorage.removeItem("iris_chat_mode");
         authToken = "";
         signedInEmail = "";
+        guestMode = false;
         activeThreadId = "";
         savedThreads = [];
         conversationHistory.length = 0;
@@ -2472,6 +2568,19 @@ def home() -> str:
 
       document.getElementById("auth-trigger").addEventListener("click", () => {
         if (!authDialog.open) authDialog.showModal();
+      });
+      document.getElementById("continue-as-guest").addEventListener("click", () => {
+        guestMode = true;
+        authToken = "";
+        signedInEmail = "";
+        localStorage.removeItem("iris_auth_token");
+        localStorage.removeItem("iris_auth_email");
+        localStorage.setItem("iris_chat_mode", "guest");
+        authEmailForm.hidden = false;
+        authCodeForm.hidden = true;
+        authStatus.textContent = "";
+        authDialog.close();
+        initializeChats();
       });
       document.getElementById("auth-back-button").addEventListener("click", () => {
         authCodeForm.hidden = true;
@@ -2508,6 +2617,8 @@ def home() -> str:
           });
           authToken = result.token;
           signedInEmail = result.email;
+          guestMode = false;
+          localStorage.removeItem("iris_chat_mode");
           localStorage.setItem("iris_auth_token", authToken);
           localStorage.setItem("iris_auth_email", signedInEmail);
           authStatus.textContent = "";
@@ -2606,7 +2717,7 @@ def home() -> str:
         const prompt = input.value.trim() ||
           (attachedImage ? "Please inspect this image for UI bugs, errors, or anomalies." : "");
         if (!prompt || button.disabled) return;
-        if (!authToken) {
+        if (!authToken && !guestMode) {
           if (!authDialog.open) authDialog.showModal();
           return;
         }
@@ -2618,6 +2729,7 @@ def home() -> str:
         closeEmojiPicker();
         welcome.hidden = true;
         const image = attachedImage;
+        const previousHistory = conversationHistory.map((turn) => ({ ...turn }));
         conversationHistory.push({
           role: "user",
           content: prompt,
@@ -2640,18 +2752,28 @@ def home() -> str:
         let streamError = "";
         try {
           const response = await fetch(
-            `/api/chats/${encodeURIComponent(activeThreadId)}/stream`,
+            authToken
+              ? `/api/chats/${encodeURIComponent(activeThreadId)}/stream`
+              : "/v1/chat/stream",
             {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${authToken}`,
-            },
-            body: JSON.stringify({
-              prompt,
-              image_data: image ? image.data : null,
-            }),
-            signal: controller.signal,
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+              },
+              body: JSON.stringify(
+                authToken
+                  ? {
+                      prompt,
+                      image_data: image ? image.data : null,
+                    }
+                  : {
+                      prompt,
+                      history: previousHistory,
+                      image_data: image ? image.data : null,
+                    },
+              ),
+              signal: controller.signal,
             },
           );
           if (!response.ok) {
@@ -2685,11 +2807,18 @@ def home() -> str:
               if (!hasToken) answer.textContent = "";
               hasToken = true;
               answer.textContent += payload.token;
-              conversationHistory.push({
-                role: "assistant",
-                content: answer.textContent,
-                image_data: null,
-              });
+              if (
+                conversationHistory[conversationHistory.length - 1].role !==
+                "assistant"
+              ) {
+                conversationHistory.push({
+                  role: "assistant",
+                  content: "",
+                  image_data: null,
+                });
+              }
+              conversationHistory[conversationHistory.length - 1].content =
+                answer.textContent;
               saveLocalCache();
               if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < 96) {
                 chat.scrollTop = chat.scrollHeight;
@@ -2711,7 +2840,7 @@ def home() -> str:
           }
           if (streamError) throw new Error(streamError);
           if (!hasToken) throw new Error("IRIS returned no response.");
-          await refreshSavedChats();
+          if (authToken) await refreshSavedChats();
         } catch (error) {
           if (error.name !== "AbortError") {
             answer.parentElement.classList.add("error");

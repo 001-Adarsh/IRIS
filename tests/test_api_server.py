@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
 from fastapi.testclient import TestClient
 
 import api_server
@@ -114,13 +115,44 @@ class TestGeminiMultimodal(unittest.TestCase):
 
         payload = post.call_args.kwargs["json"]
         self.assertEqual(answer, "The error is a missing import.")
-        self.assertIn("gemini-2.5-flash:generateContent", post.call_args.args[0])
+        self.assertIn("gemini-3.8-flash:generateContent", post.call_args.args[0])
         self.assertEqual(len(payload["contents"]), 3)
         self.assertEqual(
             payload["contents"][2]["parts"][1]["inline_data"],
             {"mime_type": "image/png", "data": "aGVsbG8="},
         )
         self.assertIn("root cause", payload["system_instruction"]["parts"][0]["text"])
+
+    def test_http_error_explains_vision_api_failure_without_falling_back_to_generic(self):
+        response = MagicMock()
+        response.status_code = 404
+        response.json.return_value = {
+            "error": {"message": "The requested vision model is unavailable."}
+        }
+        error = requests.HTTPError("Not found")
+        error.response = response
+        provider = GeminiProvider()
+
+        with (
+            patch.dict(os.environ, {"GEMINI_API_KEY": "test-gemini-key"}),
+            patch(
+                "providers.gemini_provider.requests.post",
+                side_effect=error,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"Gemini image inspection failed \(HTTP 404\): The requested vision model is unavailable\.",
+            ):
+                provider.generate_multimodal(
+                    [
+                        {
+                            "role": "user",
+                            "content": "Inspect this image.",
+                            "image_data": "data:image/png;base64,aGVsbG8=",
+                        }
+                    ]
+                )
 
 
 class TestChatSynthesis(unittest.TestCase):
@@ -200,6 +232,9 @@ class TestPublicApi(unittest.TestCase):
         self.assertNotIn("OPENROUTER", response.text)
         self.assertIn("iris-chat-cache:", response.text)
         self.assertIn("Date.now() - saved.savedAt < CACHE_TTL", response.text)
+        self.assertIn("Continue without signing in", response.text)
+        self.assertIn('guestMode = true', response.text)
+        self.assertIn('"/v1/chat/stream"', response.text)
         self.assertIn("/api/chats/", response.text)
         self.assertIn("/auth/send-otp", response.text)
         self.assertIn("/auth/verify-otp", response.text)
@@ -476,6 +511,49 @@ class TestAuthenticatedChatApi(unittest.TestCase):
         self.assertIn('"token": "Hello world"', response.text)
         self.assertNotIn("groq", response.text.lower())
         self.assertIn('event: done\ndata: {"done": true}', response.text)
+
+    def test_guest_chat_can_submit_images_and_the_full_context(self):
+        vision = MagicMock(available=True)
+        vision.generate_multimodal.return_value = "I can see the screenshot."
+        previous_turn = {
+            "role": "user",
+            "content": "Earlier prompt.",
+            "image_data": None,
+        }
+        with patch.dict(
+            api_server.synthesizer.router.providers,
+            {"gemini": vision},
+            clear=False,
+        ):
+            response = self.client.post(
+                "/v1/chat/stream",
+                json={
+                    "prompt": "What error is shown?",
+                    "history": [previous_turn],
+                    "image_data": "data:image/png;base64,aGVsbG8=",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("I can see the screenshot.", response.text)
+        self.assertEqual(
+            [turn["content"] for turn in vision.generate_multimodal.call_args.args[0]],
+            ["Earlier prompt.", "What error is shown?"],
+        )
+        self.assertEqual(
+            vision.generate_multimodal.call_args.args[0][-1]["image_data"],
+            "data:image/png;base64,aGVsbG8=",
+        )
+
+    def test_guest_image_validation_rejects_invalid_data_urls(self):
+        response = self.client.post(
+            "/v1/chat/stream",
+            json={
+                "prompt": "Inspect this.",
+                "image_data": "data:image/svg+xml;base64,PHN2Zz4=",
+            },
+        )
+        self.assertEqual(response.status_code, 422)
 
     def test_provider_status_is_not_exposed_publicly(self):
         response = self.client.get("/v1/providers")

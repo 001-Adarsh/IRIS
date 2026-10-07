@@ -42,6 +42,11 @@ authenticated saved chats:
 - `IRIS_FROM_EMAIL`: a sender address verified with SendGrid.
 - `GEMINI_API_KEY`: required for screenshot and image inspection.
 
+Users can continue as guests without email sign-in. Guest conversations and
+their 10-day expiry are stored only in that browser's local storage; signed-in
+users get server-backed chat history. Image inspection uses Gemini 3.8 Flash,
+so the configured Gemini API key must have access to that model.
+
 Attach a persistent disk and set `IRIS_DATA_DIR` to its mount path (for example,
 `/var/data`). OTP challenges and saved conversations are stored in
 `chat_persistence.sqlite3`; owner conversations remain in

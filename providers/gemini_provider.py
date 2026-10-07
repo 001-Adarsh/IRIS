@@ -114,22 +114,43 @@ class GeminiProvider(LLMProvider):
             "contents": contents,
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 4096},
         }
-        response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            "gemini-2.5-flash:generateContent",
-            params={"key": os.environ["GEMINI_API_KEY"]},
-            json=payload,
-            timeout=self.TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        candidates = response.json().get("candidates", [])
-        if not candidates:
-            raise RuntimeError("Gemini returned no image-inspection response.")
-        answer = "".join(
-            part.get("text", "")
-            for part in candidates[0].get("content", {}).get("parts", [])
-            if isinstance(part.get("text"), str)
-        ).strip()
-        if not answer:
-            raise RuntimeError("Gemini returned an empty image-inspection response.")
-        return answer
+        try:
+            response = requests.post(
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                "gemini-3.8-flash:generateContent",
+                params={"key": os.environ["GEMINI_API_KEY"]},
+                json=payload,
+                timeout=self.TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            candidates = response.json().get("candidates", [])
+            if not candidates:
+                raise RuntimeError("Gemini returned no image-inspection response.")
+            answer = "".join(
+                part.get("text", "")
+                for part in candidates[0].get("content", {}).get("parts", [])
+                if isinstance(part.get("text"), str)
+            ).strip()
+            if not answer:
+                raise RuntimeError("Gemini returned an empty image-inspection response.")
+            return answer
+        except requests.HTTPError as exc:
+            response = exc.response
+            status = response.status_code if response is not None else "unknown"
+            try:
+                detail = response.json().get("error", {}).get("message", "")
+            except (AttributeError, ValueError):
+                detail = ""
+            if not detail:
+                detail = "Check that the Gemini API key has access to this model."
+            raise RuntimeError(
+                f"Gemini image inspection failed (HTTP {status}): {detail}"
+            ) from exc
+        except requests.Timeout as exc:
+            raise RuntimeError(
+                "Gemini image inspection timed out. Try a smaller image or try again."
+            ) from exc
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                "Gemini image inspection could not reach the API. Check server network access."
+            ) from exc
