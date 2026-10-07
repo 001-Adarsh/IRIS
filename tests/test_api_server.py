@@ -124,7 +124,11 @@ class TestPublicApi(unittest.TestCase):
         self.assertIn("What’s on your mind?", response.text)
         self.assertIn("data-prompt=", response.text)
         self.assertIn("New conversation", response.text)
-        self.assertIn('src="/assets/adarsh-dwivedi.png"', response.text)
+        self.assertIn(
+            'background-image: url("/assets/adarsh-dwivedi.png")',
+            response.text,
+        )
+        self.assertIn("backdrop-filter: blur(18px)", response.text)
         self.assertNotIn("/v1/providers", response.text)
         self.assertNotIn("provider-status", response.text)
         self.assertNotIn("council-meta", response.text)

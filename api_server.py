@@ -535,13 +535,35 @@ def home() -> str:
       body {
         margin: 0;
         min-height: 100vh;
+        overflow-x: hidden;
+        background: #090b12;
+      }
+      body::before,
+      body::after {
+        position: fixed;
+        inset: 0;
+        content: "";
+        pointer-events: none;
+      }
+      body::before {
+        z-index: 0;
+        background-image: url("/assets/adarsh-dwivedi.png");
+        background-position: center 34%;
+        background-size: cover;
+        transform: scale(1.025);
+      }
+      body::after {
+        z-index: 0;
         background:
-          radial-gradient(ellipse at 74% 0%, #17132a 0, transparent 35rem),
-          #090b12;
+          radial-gradient(ellipse at 78% 20%, #6951ab35 0, transparent 38%),
+          linear-gradient(90deg, #080911a6 0%, #0a0b1359 42%, #0b0c1640 100%),
+          linear-gradient(0deg, #090a12a8 0%, #090a1220 48%, #090a1266 100%);
       }
       button, textarea { font: inherit; }
       button { color: inherit; }
       .app {
+        position: relative;
+        z-index: 1;
         min-height: 100vh;
         display: grid;
         grid-template-columns: 252px minmax(0, 1fr);
@@ -550,8 +572,10 @@ def home() -> str:
         display: flex;
         flex-direction: column;
         padding: 24px 16px 18px;
-        border-right: 1px solid var(--line);
-        background: #0c0e16d9;
+        border-right: 1px solid #ffffff15;
+        background: #0a0b13a8;
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
       }
       .brand {
         display: flex;
@@ -629,7 +653,10 @@ def home() -> str:
         align-items: center;
         justify-content: space-between;
         padding: 0 clamp(20px, 5vw, 64px);
-        border-bottom: 1px solid #20222d;
+        border-bottom: 1px solid #ffffff18;
+        background: #0b0c1494;
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
       }
       .topbar-title { color: #c7c8d5; font-size: 13px; font-weight: 560; }
       .status {
@@ -654,12 +681,12 @@ def home() -> str:
         box-shadow: 0 0 10px #e3a15f70;
       }
       .content {
-        width: min(100%, 900px);
+        width: min(100%, 960px);
         flex: 1;
         display: flex;
         flex-direction: column;
         margin: 0 auto;
-        padding: 0 28px;
+        padding: 28px;
       }
       #welcome {
         flex: 1;
@@ -667,20 +694,19 @@ def home() -> str:
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        padding: 42px 0 32px;
+        margin: auto 0;
+        padding: clamp(32px, 5vh, 56px) 24px;
+        border: 1px solid #ffffff25;
+        border-radius: 28px;
+        background:
+          radial-gradient(ellipse at 50% 0%, #6d55aa18 0, transparent 64%),
+          linear-gradient(145deg, #10111d9c, #10111d8c);
+        box-shadow: 0 28px 90px #0007, inset 0 1px #ffffff10;
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
         text-align: center;
       }
       #welcome[hidden] { display: none; }
-      .welcome-portrait {
-        width: 88px;
-        height: 88px;
-        margin-bottom: 22px;
-        border: 2px solid #ad94fc99;
-        border-radius: 50%;
-        object-fit: cover;
-        object-position: center;
-        box-shadow: 0 12px 44px #7456d442;
-      }
       .eyebrow {
         margin: 0 0 12px;
         color: #b6a4ee;
@@ -714,17 +740,19 @@ def home() -> str:
         align-items: flex-start;
         gap: 12px;
         padding: 14px;
-        border: 1px solid #292b39;
-        border-radius: 13px;
-        background: #11131cbd;
+        border: 1px solid #ffffff20;
+        border-radius: 15px;
+        background: #ffffff09;
+        backdrop-filter: blur(8px);
         text-align: left;
         cursor: pointer;
-        transition: border-color .18s, background .18s, transform .18s;
+        transition: border-color .18s, background .18s, transform .18s, box-shadow .18s;
       }
       .suggestion:hover {
         transform: translateY(-2px);
-        border-color: #6957a3;
-        background: #171523;
+        border-color: #b7a1ff80;
+        background: #9a7ee21b;
+        box-shadow: 0 10px 28px #0003;
       }
       .suggestion-icon { color: #b9a3ff; font-size: 17px; line-height: 1; }
       .suggestion strong { display: block; color: #e2e0ec; font-size: 12px; font-weight: 600; }
@@ -763,8 +791,18 @@ def home() -> str:
         overflow-wrap: anywhere;
         font-size: 14px;
       }
-      .assistant .msg { border: 1px solid #292b39; border-top-left-radius: 5px; background: #141620; }
-      .user .msg { border: 1px solid #6955a0; border-top-right-radius: 5px; background: #403267; }
+      .assistant .msg {
+        border: 1px solid #ffffff20;
+        border-top-left-radius: 5px;
+        background: #11121dcc;
+        backdrop-filter: blur(14px);
+      }
+      .user .msg {
+        border: 1px solid #b29aff65;
+        border-top-right-radius: 5px;
+        background: #574582d9;
+        backdrop-filter: blur(12px);
+      }
       .error .msg { border-color: #783e49; background: #3a222b; color: #ffd0d0; }
       .composer-wrap { padding: 12px 0 20px; }
       form {
@@ -774,8 +812,10 @@ def home() -> str:
         padding: 11px 11px 11px 16px;
         border: 1px solid #343341;
         border-radius: 17px;
-        background: #14151f;
-        box-shadow: 0 12px 42px #0003;
+        background: #10111bd9;
+        box-shadow: 0 16px 48px #0005, inset 0 1px #ffffff0a;
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
         transition: border-color .18s, box-shadow .18s;
       }
       form:focus-within {
@@ -822,11 +862,18 @@ def home() -> str:
         aside { display: none; }
         main { min-height: 100dvh; }
         .topbar { min-height: 60px; padding: 0 18px; }
-        .content { padding: 0 18px; }
-        #welcome { padding: 34px 0 24px; }
+        .topbar-title { max-width: 70%; font-size: 12px; line-height: 1.5; }
+        .content { padding: 18px; }
+        #welcome { padding: 38px 18px; border-radius: 22px; }
         .welcome-copy { font-size: 14px; }
       }
       @media (max-width: 440px) {
+        body::before { background-position: 54% 32%; }
+        body::after {
+          background:
+            linear-gradient(180deg, #080911a8 0%, #090a124f 38%, #090a12b0 100%),
+            linear-gradient(90deg, #08091145, #0809111c);
+        }
         .suggestions { grid-template-columns: 1fr; }
         .suggestion { min-height: 58px; }
         #chat { gap: 16px; padding-top: 24px; }
@@ -856,7 +903,6 @@ def home() -> str:
         </header>
         <div class="content">
           <section id="welcome" aria-labelledby="welcome-title">
-            <img class="welcome-portrait" src="/assets/adarsh-dwivedi.png" alt="Adarsh Dwivedi">
             <p class="eyebrow">The IRIS · Personal Assistant</p>
             <h1 id="welcome-title">What’s on your mind?</h1>
             <p class="welcome-copy">Ask a question, untangle a tricky idea, or get a first draft moving. I’m here to help you make progress.</p>
