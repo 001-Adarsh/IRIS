@@ -23,8 +23,17 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Literal
 
+import requests
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -413,6 +422,58 @@ def _secure_cookie(request: Request) -> bool:
     return request.url.scheme == "https" or os.getenv("RENDER", "").lower() == "true"
 
 
+def _send_owner_email_notification(display_name: str, message: str) -> None:
+    api_key = os.getenv("SENDGRID_API_KEY", "").strip()
+    recipient = os.getenv("IRIS_NOTIFICATION_EMAIL", "").strip()
+    sender = os.getenv("IRIS_FROM_EMAIL", "").strip()
+    if not api_key or not recipient or not sender:
+        logger.warning(
+            "Owner email notification not sent: configure "
+            "SENDGRID_API_KEY, IRIS_NOTIFICATION_EMAIL, and IRIS_FROM_EMAIL."
+        )
+        return
+
+    try:
+        result = requests.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "personalizations": [
+                    {
+                        "to": [{"email": recipient}],
+                        "subject": "New message for you on IRIS",
+                    }
+                ],
+                "from": {"email": sender, "name": "IRIS"},
+                "content": [
+                    {
+                        "type": "text/plain",
+                        "value": (
+                            f"{display_name} sent you a private message on IRIS:\n\n"
+                            f"{message}\n\n"
+                            "Open your owner inbox: "
+                            "https://iris-nub2.onrender.com/admin"
+                        ),
+                    }
+                ],
+            },
+            timeout=8,
+        )
+    except requests.RequestException:
+        logger.exception("Could not send the IRIS owner email notification.")
+        return
+
+    if not 200 <= result.status_code < 300:
+        logger.error(
+            "IRIS owner email notification failed with SendGrid status %s: %s",
+            result.status_code,
+            result.text[:500],
+        )
+
+
 def _visitor_id(request: Request, *, allow_missing: bool = False) -> str | None:
     token = request.cookies.get("iris_visitor")
     if token is None and allow_missing:
@@ -499,6 +560,8 @@ def create_admin_session(
 
 @app.delete("/v1/admin/session")
 def delete_admin_session(request: Request) -> Response:
+    _require_admin(request)
+    connection_store.update_owner_presence(0)
     response = Response(status_code=204, headers={"Cache-Control": "no-store"})
     response.delete_cookie(
         "iris_admin",
@@ -508,6 +571,20 @@ def delete_admin_session(request: Request) -> Response:
         path="/v1/admin",
     )
     return response
+
+
+@app.post("/v1/admin/presence")
+@limiter.limit("60/minute")
+def update_admin_presence(request: Request) -> dict[str, str]:
+    _require_admin(request)
+    connection_store.update_owner_presence(int(time.time()))
+    return {"status": "online"}
+
+
+@app.get("/v1/presence")
+@limiter.limit("60/minute")
+def public_owner_presence(request: Request) -> dict[str, bool]:
+    return {"online": connection_store.owner_is_online(int(time.time()))}
 
 
 @app.get("/v1/admin/connections")
@@ -634,6 +711,7 @@ def visitor_connection_status(request: Request) -> dict[str, Any]:
 def create_connection_request(
     request: Request,
     body: ConnectionRequest,
+    background_tasks: BackgroundTasks,
 ) -> JSONResponse:
     visitor_id = _visitor_id(request, allow_missing=True) or secrets.token_urlsafe(32)
     signature = _session_signature(visitor_id, "visitor")
@@ -646,6 +724,11 @@ def create_connection_request(
         )
     except DuplicateConnectionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    background_tasks.add_task(
+        _send_owner_email_notification,
+        display_name,
+        body.message,
+    )
     response = JSONResponse(
         {key: value for key, value in connection.items() if key != "visitor_id"},
         headers={"Cache-Control": "no-store"},
@@ -680,6 +763,7 @@ def visitor_list_messages(
 def visitor_send_message(
     request: Request,
     body: ConnectionMessageRequest,
+    background_tasks: BackgroundTasks,
 ) -> dict[str, Any]:
     visitor_id = _require_visitor_id(request)
     connection = connection_store.visitor_connection(visitor_id)
@@ -698,6 +782,11 @@ def visitor_send_message(
             status_code=409,
             detail="An approved owner conversation is required.",
         )
+    background_tasks.add_task(
+        _send_owner_email_notification,
+        connection["display_name"],
+        body.message,
+    )
     return message
 
 
@@ -1007,6 +1096,24 @@ def home() -> str:
       }
       .connect-owner:hover { border-color: #b7a1ff; background: #9a7ee22b; }
       .topbar-actions { display: flex; align-items: center; gap: 12px; }
+      .owner-online-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-left: 5px;
+        color: #9ee8b7;
+        font-size: 10px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+      .owner-online-badge[hidden] { display: none; }
+      .owner-online-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #77e19d;
+        box-shadow: 0 0 9px #77e19d99;
+      }
       .topbar-connect {
         min-height: 36px;
         padding: 0 12px;
@@ -1332,7 +1439,12 @@ def home() -> str:
           <div><div class="brand-name">The IRIS</div><div class="brand-caption">Personal Assistant of Adarsh Dwivedi</div></div>
         </div>
         <button class="new-chat" id="new-chat" type="button"><span aria-hidden="true">＋</span> New conversation</button>
-        <button class="connect-owner" type="button" data-open-owner-chat>Chat with Adarsh</button>
+        <button class="connect-owner" type="button" data-open-owner-chat>
+          Chat with Adarsh
+          <span class="owner-online-badge" data-owner-online hidden>
+            <span class="owner-online-dot" aria-hidden="true"></span>Online now
+          </span>
+        </button>
         <div class="side-label">Made for momentum</div>
         <div class="side-note"><span aria-hidden="true">✳</span><span>Explore ideas and get clear, useful answers.</span></div>
         <div class="side-note"><span aria-hidden="true">⌘</span><span>Research, write, plan, and build in one place.</span></div>
@@ -1343,7 +1455,12 @@ def home() -> str:
         <header class="topbar">
           <div class="topbar-title">The IRIS - Personal Assistant of Adarsh Dwivedi</div>
           <div class="topbar-actions">
-            <button class="topbar-connect" type="button" data-open-owner-chat>Chat with Adarsh</button>
+            <button class="topbar-connect" type="button" data-open-owner-chat>
+              Chat with Adarsh
+              <span class="owner-online-badge" data-owner-online hidden>
+                <span class="owner-online-dot" aria-hidden="true"></span>Online now
+              </span>
+            </button>
             <div class="status"><span class="status-dot" aria-hidden="true"></span>Here to help</div>
           </div>
         </header>
@@ -1566,6 +1683,23 @@ def home() -> str:
       const connectionTranscript = document.getElementById("connection-transcript");
       let connectionPollTimer = null;
       let connectionLastMessageId = 0;
+      async function refreshOwnerPresence() {
+        try {
+          const response = await fetch("/v1/presence", { cache: "no-store" });
+          if (!response.ok) return;
+          const presence = await response.json();
+          document.querySelectorAll("[data-owner-online]").forEach((badge) => {
+            badge.hidden = !presence.online;
+          });
+        } catch (_) {
+          document.querySelectorAll("[data-owner-online]").forEach((badge) => {
+            badge.hidden = true;
+          });
+        }
+      }
+
+      refreshOwnerPresence();
+      window.setInterval(refreshOwnerPresence, 15000);
 
       function connectionApi(path, options = {}) {
         return fetch(path, {

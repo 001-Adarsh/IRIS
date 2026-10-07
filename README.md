@@ -51,3 +51,20 @@ that disk and remain there across deploys. The owner can permanently delete a
 conversation and its messages from the inbox. Without the password or writable
 persistent storage, connection requests are unavailable; the regular IRIS chat
 continues to work.
+
+### Owner email notifications and online status
+
+To receive an email when someone requests a chat or sends a message in an
+approved conversation, configure these additional Render environment variables:
+
+- `SENDGRID_API_KEY`: a SendGrid API key with Mail Send permission.
+- `IRIS_NOTIFICATION_EMAIL`: the email address that should receive alerts.
+- `IRIS_FROM_EMAIL`: a sender address verified with SendGrid.
+
+Notifications include the visitor's name and message text. Values are read only
+from the service environment; do not add them to source control. Check the
+Render service logs if SendGrid rejects a notification.
+
+The public chat shows a green **Online now** badge only while the signed-in
+owner inbox is open and sending its periodic heartbeat. The badge disappears
+within about a minute after the heartbeat expires or when the owner signs out.

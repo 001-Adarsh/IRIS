@@ -66,6 +66,10 @@ class LiveConnectionStore:
                 );
                 CREATE INDEX IF NOT EXISTS connection_messages_conversation
                     ON connection_messages(connection_id, id);
+                CREATE TABLE IF NOT EXISTS owner_presence (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    last_seen_at INTEGER NOT NULL
+                );
                 """
             )
 
@@ -258,3 +262,21 @@ class LiveConnectionStore:
                 (connection_id,),
             )
         return cursor.rowcount > 0
+
+    def update_owner_presence(self, last_seen_at: int) -> None:
+        with self._connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO owner_presence (id, last_seen_at)
+                VALUES (1, ?)
+                ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+                """,
+                (last_seen_at,),
+            )
+
+    def owner_is_online(self, now: int, timeout_seconds: int = 60) -> bool:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT last_seen_at FROM owner_presence WHERE id = 1"
+            ).fetchone()
+        return row is not None and now - row["last_seen_at"] < timeout_seconds

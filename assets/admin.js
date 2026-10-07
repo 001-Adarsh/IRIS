@@ -14,6 +14,7 @@ let currentFilter = "pending";
 let selectedId = null;
 let lastMessageId = 0;
 let refreshTimer = null;
+let presenceTimer = null;
 let refreshInProgress = false;
 
 async function api(path, options = {}) {
@@ -57,6 +58,8 @@ function showLogin(message = "") {
   loginError.textContent = message;
   window.clearInterval(refreshTimer);
   refreshTimer = null;
+  window.clearInterval(presenceTimer);
+  presenceTimer = null;
 }
 
 function showInbox() {
@@ -65,6 +68,20 @@ function showInbox() {
   loginError.textContent = "";
   inboxError.hidden = true;
   inboxError.textContent = "";
+}
+
+async function sendPresenceHeartbeat() {
+  try {
+    await api("/v1/admin/presence", { method: "POST" });
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function startPresenceHeartbeat() {
+  window.clearInterval(presenceTimer);
+  sendPresenceHeartbeat();
+  presenceTimer = window.setInterval(sendPresenceHeartbeat, 20000);
 }
 
 function addBubble(message) {
@@ -219,6 +236,7 @@ loginForm.addEventListener("submit", async (event) => {
     showInbox();
     await refreshInbox();
     refreshTimer = window.setInterval(refreshInbox, 5000);
+    startPresenceHeartbeat();
   } catch (error) {
     loginError.textContent = error.message;
   } finally {
@@ -262,6 +280,7 @@ replyForm.addEventListener("submit", async (event) => {
     });
     replyInput.value = "";
     await refreshInbox();
+    startPresenceHeartbeat();
   } catch (error) {
     showError(error);
   } finally {

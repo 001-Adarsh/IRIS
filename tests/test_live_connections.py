@@ -1,7 +1,7 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -205,6 +205,99 @@ class TestLiveConnectionApi(unittest.TestCase):
                 401,
             )
         self.assertEqual(api_server.connection_store.list_connections(), [])
+
+    def test_owner_presence_follows_authenticated_admin_heartbeats(self):
+        self.assertEqual(
+            self.client.get("/v1/presence").json(),
+            {"online": False},
+        )
+        self.assertEqual(
+            self.client.post("/v1/admin/presence").status_code,
+            401,
+        )
+
+        self.assertEqual(self.sign_in().status_code, 200)
+        self.assertEqual(
+            self.client.post("/v1/admin/presence").json(),
+            {"status": "online"},
+        )
+        self.assertEqual(
+            self.client.get("/v1/presence").json(),
+            {"online": True},
+        )
+
+        self.assertEqual(
+            self.client.delete("/v1/admin/session").status_code,
+            204,
+        )
+        self.assertEqual(
+            self.client.get("/v1/presence").json(),
+            {"online": False},
+        )
+
+    def test_connection_requests_and_visitor_messages_send_sendgrid_alerts(self):
+        sendgrid_response = MagicMock(status_code=202, text="")
+        env = {
+            "SENDGRID_API_KEY": "SG-test-api-key",
+            "IRIS_NOTIFICATION_EMAIL": "owner@example.com",
+            "IRIS_FROM_EMAIL": "iris@example.com",
+        }
+        with (
+            patch.dict(os.environ, env),
+            patch.object(
+                api_server.requests,
+                "post",
+                return_value=sendgrid_response,
+            ) as send_email,
+        ):
+            created = self.create_request("Please contact me about IRIS.")
+            self.assertEqual(created.status_code, 200)
+            self.assertEqual(
+                send_email.call_args.kwargs["headers"]["Authorization"],
+                "Bearer SG-test-api-key",
+            )
+            first_payload = send_email.call_args.kwargs["json"]
+            self.assertEqual(first_payload["personalizations"][0]["to"][0]["email"],
+                             "owner@example.com")
+            self.assertIn(
+                "Please contact me about IRIS.",
+                first_payload["content"][0]["value"],
+            )
+            send_email.reset_mock()
+
+            self.assertEqual(self.sign_in().status_code, 200)
+            connection = self.client.get(
+                "/v1/admin/connections?status=pending"
+            ).json()[0]
+            self.assertEqual(
+                self.client.post(
+                    f"/v1/admin/connections/{connection['id']}/decision",
+                    json={"action": "approve"},
+                ).status_code,
+                200,
+            )
+            response = self.client.post(
+                "/v1/connect/messages",
+                json={"message": "Here is another question."},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        send_email.assert_called_once()
+        self.assertIn(
+            "Here is another question.",
+            send_email.call_args.kwargs["json"]["content"][0]["value"],
+        )
+
+    def test_public_page_has_hidden_owner_online_badges_and_admin_heartbeat(self):
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('data-owner-online hidden', page.text)
+        self.assertIn("/v1/presence", page.text)
+
+        admin_script = self.client.get("/assets/admin.js?v=4")
+        self.assertEqual(admin_script.status_code, 200)
+        self.assertIn("/v1/admin/presence", admin_script.text)
+        self.assertIn("setInterval(sendPresenceHeartbeat, 20000)", admin_script.text)
 
 
 if __name__ == "__main__":
