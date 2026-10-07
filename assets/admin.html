@@ -38,6 +38,7 @@
       button:disabled { cursor: wait; opacity: .55; }
       #login-form .primary { width: 100%; margin-top: 13px; }
       .error { min-height: 20px; margin: 12px 0 0; color: #ffb8c1; font-size: 12px; }
+      .inbox-error { margin: 0 0 16px; padding: 12px 14px; border: 1px solid #a9515f70; border-radius: 11px; background: #3a222b; color: #ffd0d0; font-size: 13px; line-height: 1.5; }
       [hidden] { display: none !important; }
       .layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); gap: 16px; min-height: 70vh; }
       .inbox, .conversation { min-width: 0; overflow: hidden; }
@@ -94,6 +95,7 @@
           </div>
           <button id="sign-out" class="secondary" type="button">Sign out</button>
         </header>
+        <p id="inbox-error" class="inbox-error" role="alert" hidden></p>
         <div class="layout">
           <section class="inbox" aria-label="Connection requests">
             <div class="inbox-head">
@@ -124,6 +126,6 @@
         </div>
       </section>
     </main>
-    <script src="/assets/admin.js" defer></script>
+    <script src="/assets/admin.js?v=2" defer></script>
   </body>
 </html>

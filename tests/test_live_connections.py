@@ -179,6 +179,11 @@ class TestLiveConnectionApi(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("IRIS owner inbox", page.text)
         self.assertIn("no-store", page.headers["cache-control"])
+        admin_script = self.client.get("/assets/admin.js")
+        self.assertEqual(admin_script.status_code, 200)
+        self.assertNotIn("window.alert", admin_script.text)
+        self.assertIn("Cannot reach IRIS right now", admin_script.text)
+        self.assertIn("refreshInProgress", admin_script.text)
         self.assertEqual(
             self.client.get("/v1/admin/connections").status_code,
             401,

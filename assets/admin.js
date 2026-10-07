@@ -1,5 +1,6 @@
 const loginView = document.getElementById("login-view");
 const inboxView = document.getElementById("inbox-view");
+const inboxError = document.getElementById("inbox-error");
 const loginForm = document.getElementById("login-form");
 const loginError = document.getElementById("login-error");
 const requestList = document.getElementById("request-list");
@@ -13,16 +14,25 @@ let currentFilter = "pending";
 let selectedId = null;
 let lastMessageId = 0;
 let refreshTimer = null;
+let refreshInProgress = false;
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...options,
-    headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-      ...options.headers,
-    },
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      ...options,
+      headers: {
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...options.headers,
+      },
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error("Cannot reach IRIS right now. Check your connection, then try Refresh.");
+    }
+    throw error;
+  }
   if (response.status === 204) return null;
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -43,6 +53,7 @@ function showLogin(message = "") {
   transcript.innerHTML = '<p class="empty">Requests and approved conversations will appear here.</p>';
   loginView.hidden = false;
   inboxView.hidden = true;
+  inboxError.hidden = true;
   loginError.textContent = message;
   window.clearInterval(refreshTimer);
   refreshTimer = null;
@@ -52,6 +63,8 @@ function showInbox() {
   loginView.hidden = true;
   inboxView.hidden = false;
   loginError.textContent = "";
+  inboxError.hidden = true;
+  inboxError.textContent = "";
 }
 
 function addBubble(message) {
@@ -142,6 +155,21 @@ async function loadConnections() {
   }
 }
 
+async function refreshInbox() {
+  if (refreshInProgress || inboxView.hidden) return;
+  refreshInProgress = true;
+  try {
+    await loadConnections();
+    await refreshMessages();
+    inboxError.hidden = true;
+    inboxError.textContent = "";
+  } catch (error) {
+    showError(error);
+  } finally {
+    refreshInProgress = false;
+  }
+}
+
 async function decide(action) {
   if (selectedId === null) return;
   await api(`/v1/admin/connections/${selectedId}/decision`, {
@@ -171,7 +199,8 @@ function showError(error) {
   if (error.status === 401) {
     showLogin("Your admin session expired. Please sign in again.");
   } else {
-    window.alert(error.message);
+    inboxError.textContent = error.message || "Could not load the inbox. Try Refresh.";
+    inboxError.hidden = false;
   }
 }
 
@@ -188,10 +217,8 @@ loginForm.addEventListener("submit", async (event) => {
     });
     passwordInput.value = "";
     showInbox();
-    await loadConnections();
-    refreshTimer = window.setInterval(() => {
-      loadConnections().then(refreshMessages).catch(showError);
-    }, 5000);
+    await refreshInbox();
+    refreshTimer = window.setInterval(refreshInbox, 5000);
   } catch (error) {
     loginError.textContent = error.message;
   } finally {
@@ -204,12 +231,12 @@ document.querySelectorAll(".tab").forEach((tab) => {
     document.querySelector(".tab.active")?.classList.remove("active");
     tab.classList.add("active");
     currentFilter = tab.dataset.status;
-    loadConnections().catch(showError);
+    refreshInbox();
   });
 });
 
 document.getElementById("refresh").addEventListener("click", () => {
-  loadConnections().then(refreshMessages).catch(showError);
+  refreshInbox();
 });
 
 document.getElementById("sign-out").addEventListener("click", async () => {
@@ -234,8 +261,7 @@ replyForm.addEventListener("submit", async (event) => {
       body: JSON.stringify({ message }),
     });
     replyInput.value = "";
-    await refreshMessages();
-    await loadConnections();
+    await refreshInbox();
   } catch (error) {
     showError(error);
   } finally {
@@ -246,13 +272,11 @@ replyForm.addEventListener("submit", async (event) => {
 api("/v1/admin/connections")
   .then(() => {
     showInbox();
-    return loadConnections();
+    return refreshInbox();
   })
   .then(() => {
-    refreshTimer = window.setInterval(() => {
-      loadConnections().then(refreshMessages).catch(showError);
-    }, 5000);
+    refreshTimer = window.setInterval(refreshInbox, 5000);
   })
   .catch((error) => {
-    showLogin(error.status === 503 ? error.message : "");
+    showLogin(error.status === 401 ? "" : error.message);
   });
