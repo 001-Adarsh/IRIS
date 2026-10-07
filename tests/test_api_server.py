@@ -117,13 +117,28 @@ class TestPublicApi(unittest.TestCase):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/html", response.headers["content-type"])
-        self.assertIn("IRIS — Your AI workspace", response.text)
+        self.assertIn(
+            "The IRIS - Personal Assistant of Adarsh Dwivedi",
+            response.text,
+        )
         self.assertIn("What’s on your mind?", response.text)
         self.assertIn("data-prompt=", response.text)
         self.assertIn("New conversation", response.text)
-        self.assertIn("showCouncilMeta", response.text)
+        self.assertIn('src="/assets/adarsh-dwivedi.png"', response.text)
+        self.assertNotIn("/v1/providers", response.text)
+        self.assertNotIn("provider-status", response.text)
+        self.assertNotIn("council-meta", response.text)
+        self.assertNotIn("GROQ", response.text)
+        self.assertNotIn("OPENROUTER", response.text)
         self.assertIn("conversationHistory.slice(-10)", response.text)
         self.assertIn("/v1/chat/stream", response.text)
+
+    def test_owner_portrait_is_served_as_png(self):
+        response = self.client.get("/assets/adarsh-dwivedi.png")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertTrue(response.content.startswith(b"\x89PNG\r\n\x1a\n"))
 
     def test_identity_questions_use_configured_creator_without_groq(self):
         response = self.client.post(
@@ -146,7 +161,7 @@ class TestPublicApi(unittest.TestCase):
         self.assertIn("I'm IRIS, an AI assistant created by Adarsh Dwivedi.", response.text)
         self.assertIn("software-development tasks", response.text)
 
-    def test_live_chat_uses_synthesizer_with_context_and_reports_council(self):
+    def test_live_chat_uses_synthesizer_without_exposing_provider_names(self):
         with (
             patch.object(
                 api_server.synthesizer.router,
@@ -179,7 +194,9 @@ class TestPublicApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("A grounded answer.", response.text)
-        self.assertIn('"providers": ["groq", "gemini"]', response.text)
+        self.assertNotIn("groq", response.text.lower())
+        self.assertNotIn("gemini", response.text.lower())
+        self.assertNotIn("openrouter", response.text.lower())
         self.assertEqual(
             synthesize_chat.call_args.args[0],
             "Tell me more about him",
@@ -224,37 +241,19 @@ class TestPublicApi(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn('"token": "Hello world"', response.text)
-        self.assertIn('"council": {"providers": ["groq"]', response.text)
-        self.assertIn('"mode": "council"', response.text)
+        self.assertNotIn("groq", response.text.lower())
         self.assertIn('event: done\ndata: {"done": true}', response.text)
 
-    def test_provider_status_reports_configuration_without_secrets(self):
-        providers = {
-            "gemini": type("Gemini", (), {"available": True})(),
-            "openrouter": type("OpenRouter", (), {"available": False})(),
-        }
-        with patch.object(
-            api_server.synthesizer.router, "providers", providers
-        ):
-            response = self.client.get("/v1/providers")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json(),
-            {
-                "providers": [
-                    {"name": "gemini", "available": True},
-                    {"name": "openrouter", "available": False},
-                ]
-            },
-        )
+    def test_provider_status_is_not_exposed_publicly(self):
+        response = self.client.get("/v1/providers")
+        self.assertEqual(response.status_code, 404)
 
     def test_explicit_provider_route_calls_selected_provider(self):
         for provider_name in ("gemini", "openrouter"):
             with self.subTest(provider=provider_name):
                 provider = MagicMock()
                 provider.available = True
-                provider.generate.return_value = f"Direct {provider_name} answer"
+                provider.generate.return_value = "Direct assistant answer"
                 with patch.object(
                     api_server.synthesizer.router,
                     "providers",
@@ -270,8 +269,8 @@ class TestPublicApi(unittest.TestCase):
                     )
 
                 self.assertEqual(response.status_code, 200)
-                self.assertIn(f"Direct {provider_name} answer", response.text)
-                self.assertIn('"mode": "direct"', response.text)
+                self.assertIn("Direct assistant answer", response.text)
+                self.assertNotIn(provider_name, response.text.lower())
                 provider.generate.assert_called_once_with(
                     "Reply with a short greeting"
                 )
@@ -290,10 +289,7 @@ class TestPublicApi(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(
-            "Gemini is not configured on this server.",
-            response.text,
-        )
+        self.assertIn("That assistant route is not configured.", response.text)
         provider.generate.assert_not_called()
 
     def test_research_uses_web_evidence_for_synthesis(self):

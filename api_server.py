@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -51,6 +52,11 @@ public_rate_limit = limiter.shared_limit("20/minute", scope="public-api")
 app = FastAPI(title="IRIS API", version="1.0.0")
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.mount(
+    "/assets",
+    StaticFiles(directory=Path(__file__).resolve().parent / "assets"),
+    name="assets",
+)
 
 cors_origins = [
     origin.strip()
@@ -320,21 +326,6 @@ def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/v1/providers")
-@public_rate_limit
-def provider_status(request: Request) -> dict[str, list[dict[str, Any]]]:
-    providers = synthesizer.router.providers
-    return {
-        "providers": [
-            {
-                "name": name,
-                "available": bool(getattr(provider, "available", False)),
-            }
-            for name, provider in providers.items()
-        ]
-    }
-
-
 @app.post("/v1/chat/stream")
 @public_rate_limit
 def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
@@ -369,19 +360,19 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
                 if not provider_prompt:
                     yield _sse_event(
                         "error",
-                        {"error": f"Add a prompt after @{provider_name}."},
+                        {"error": "Add a prompt after the provider name."},
                     )
                     return
                 if not getattr(provider, "available", False):
                     yield _sse_event(
                         "error",
-                        {"error": f"{provider_name.capitalize()} is not configured on this server."},
+                        {"error": "That assistant route is not configured."},
                     )
                     return
 
                 yield _sse_event(
                     "status",
-                    {"message": f"Sending directly to {provider_name.capitalize()}…"},
+                    {"message": "Working on your request…"},
                 )
                 answer = provider.generate(provider_prompt)
                 if (
@@ -393,22 +384,13 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
                         "error",
                         {
                             "error": (
-                                f"{provider_name.capitalize()} could not return "
+                                "The selected assistant route could not return "
                                 "a usable answer."
                             )
                         },
                     )
                     return
-                route_info = {
-                    "providers": [provider_name],
-                    "synthesized_by": None,
-                    "mode": "direct",
-                }
-                yield _sse_event(
-                    "token",
-                    {"token": str(answer).strip(), "council": route_info},
-                )
-                yield _sse_event("council", route_info)
+                yield _sse_event("token", {"token": str(answer).strip()})
             else:
                 if not available:
                     yield _sse_event(
@@ -444,16 +426,10 @@ def stream_chat(request: Request, body: PromptRequest) -> StreamingResponse:
                         },
                     )
                     return
-                route_info = {
-                    "providers": participants,
-                    "synthesized_by": result.get("synthesized_by"),
-                    "mode": "council",
-                }
                 yield _sse_event(
                     "token",
-                    {"token": answer, "council": route_info},
+                    {"token": answer},
                 )
-                yield _sse_event("council", route_info)
             yield _sse_event("done", {"done": True})
         except Exception:
             logger.exception("IRIS chat stream failed")
@@ -540,8 +516,8 @@ def home() -> str:
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#090b12">
-    <meta name="description" content="IRIS is your AI workspace for questions, research, writing, and building.">
-    <title>IRIS — Your AI workspace</title>
+    <meta name="description" content="The IRIS - Personal Assistant of Adarsh Dwivedi.">
+    <title>The IRIS - Personal Assistant of Adarsh Dwivedi</title>
     <style>
       :root {
         color-scheme: dark;
@@ -597,6 +573,7 @@ def home() -> str:
       }
       .brand-name { font-size: 17px; font-weight: 720; letter-spacing: .13em; }
       .brand-caption { margin-top: 3px; color: var(--muted); font-size: 11px; }
+      .brand-caption { max-width: 165px; line-height: 1.4; }
       .new-chat {
         width: 100%;
         min-height: 43px;
@@ -694,19 +671,15 @@ def home() -> str:
         text-align: center;
       }
       #welcome[hidden] { display: none; }
-      .welcome-mark {
-        display: grid;
-        width: 58px;
-        height: 58px;
-        place-items: center;
+      .welcome-portrait {
+        width: 88px;
+        height: 88px;
         margin-bottom: 22px;
-        border: 1px solid #ad94fc66;
-        border-radius: 20px;
-        background: radial-gradient(circle at 30% 20%, #bba8ff, #7656cd 72%);
+        border: 2px solid #ad94fc99;
+        border-radius: 50%;
+        object-fit: cover;
+        object-position: center;
         box-shadow: 0 12px 44px #7456d442;
-        color: white;
-        font-size: 28px;
-        font-weight: 750;
       }
       .eyebrow {
         margin: 0 0 12px;
@@ -793,12 +766,6 @@ def home() -> str:
       .assistant .msg { border: 1px solid #292b39; border-top-left-radius: 5px; background: #141620; }
       .user .msg { border: 1px solid #6955a0; border-top-right-radius: 5px; background: #403267; }
       .error .msg { border-color: #783e49; background: #3a222b; color: #ffd0d0; }
-      .council-meta {
-        flex-basis: 100%;
-        margin: -14px 0 0 41px;
-        color: #85879a;
-        font-size: 10px;
-      }
       .composer-wrap { padding: 12px 0 20px; }
       form {
         display: flex;
@@ -873,7 +840,7 @@ def home() -> str:
       <aside aria-label="IRIS workspace">
         <div class="brand">
           <div class="brand-mark" aria-hidden="true">i</div>
-          <div><div class="brand-name">IRIS</div><div class="brand-caption">Your AI workspace</div></div>
+          <div><div class="brand-name">The IRIS</div><div class="brand-caption">Personal Assistant of Adarsh Dwivedi</div></div>
         </div>
         <button class="new-chat" id="new-chat" type="button"><span aria-hidden="true">＋</span> New conversation</button>
         <div class="side-label">Made for momentum</div>
@@ -884,16 +851,13 @@ def home() -> str:
       </aside>
       <main>
         <header class="topbar">
-          <div class="topbar-title">A little more clarity, one question at a time.</div>
-          <div class="status" id="provider-status" title="Availability shows whether provider credentials are configured; each model is verified when used.">
-            <span class="status-dot" aria-hidden="true"></span>
-            <span id="provider-status-text">Checking council…</span>
-          </div>
+          <div class="topbar-title">The IRIS - Personal Assistant of Adarsh Dwivedi</div>
+          <div class="status"><span class="status-dot" aria-hidden="true"></span>Here to help</div>
         </header>
         <div class="content">
           <section id="welcome" aria-labelledby="welcome-title">
-            <div class="welcome-mark" aria-hidden="true">i</div>
-            <p class="eyebrow">Your ideas start here</p>
+            <img class="welcome-portrait" src="/assets/adarsh-dwivedi.png" alt="Adarsh Dwivedi">
+            <p class="eyebrow">The IRIS · Personal Assistant</p>
             <h1 id="welcome-title">What’s on your mind?</h1>
             <p class="welcome-copy">Ask a question, untangle a tricky idea, or get a first draft moving. I’m here to help you make progress.</p>
             <div class="suggestions" aria-label="Suggested prompts">
@@ -931,29 +895,8 @@ def home() -> str:
       const button = document.getElementById("send");
       const welcome = document.getElementById("welcome");
       const newChatButton = document.getElementById("new-chat");
-      const providerStatus = document.getElementById("provider-status");
-      const providerStatusText = document.getElementById("provider-status-text");
       const conversationHistory = [];
       let activeRequest = null;
-
-      fetch("/v1/providers")
-        .then((response) => {
-          if (!response.ok) throw new Error(`Status request failed (${response.status})`);
-          return response.json();
-        })
-        .then(({ providers }) => {
-          const configured = providers
-            .filter((provider) => provider.available)
-            .map((provider) => provider.name.toUpperCase());
-          providerStatusText.textContent = configured.length
-            ? `Council configured · ${configured.join(" + ")}`
-            : "No council providers configured";
-          if (!configured.length) providerStatus.classList.add("unavailable");
-        })
-        .catch(() => {
-          providerStatusText.textContent = "Council status unavailable";
-          providerStatus.classList.add("unavailable");
-        });
 
       function addMessage(text, kind) {
         const row = document.createElement("div");
@@ -972,24 +915,6 @@ def home() -> str:
         chat.appendChild(row);
         row.scrollIntoView({ behavior: "smooth", block: "end" });
         return message;
-      }
-
-      function showCouncilMeta(answer, councilInfo) {
-        const participants = (councilInfo.providers || [])
-          .map((name) => name.toUpperCase());
-        if (answer.parentElement.querySelector(".council-meta")) return;
-        const judge = councilInfo.synthesized_by
-          ? ` · synthesized by ${councilInfo.synthesized_by.toUpperCase()}`
-          : "";
-        const label = councilInfo.mode === "direct"
-          ? `Direct · ${participants.join(", ")}`
-          : participants.length > 1
-            ? `IRIS Council · ${participants.join(" + ")}${judge}`
-            : `Single model · ${participants.join("")} · no multi-model consensus`;
-        const meta = document.createElement("span");
-        meta.className = "council-meta";
-        meta.textContent = label;
-        answer.parentElement.appendChild(meta);
       }
 
       newChatButton.addEventListener("click", () => {
@@ -1091,9 +1016,6 @@ def home() -> str:
               chat.scrollTop = chat.scrollHeight;
             }
             if (payload.error) streamError = payload.error;
-            if (payload.council) {
-              showCouncilMeta(answer, payload.council);
-            }
           };
 
           while (true) {

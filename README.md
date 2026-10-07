@@ -27,8 +27,7 @@ them to the repository.
 
 The web chat sends conversational requests through the IRIS synthesizer in
 forced-council mode, which queries all configured providers concurrently and
-reports which models responded. Configure `GROQ_API_KEY`, `GEMINI_API_KEY`, and
-`OPENROUTER_API_KEY` in Render to enable those providers. `/v1/providers` reports
-which provider credentials are configured (not a live upstream connectivity
-check). Use `@gemini <prompt>` or `@openrouter <prompt>` to route a request
-directly to one provider.
+returns a single synthesized answer. Configure `GROQ_API_KEY`,
+`GEMINI_API_KEY`, and `OPENROUTER_API_KEY` in Render to enable those providers.
+Use `@gemini <prompt>` or `@openrouter <prompt>` to route a request directly to
+one provider.
