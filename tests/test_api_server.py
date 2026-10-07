@@ -138,6 +138,13 @@ class TestPublicApi(unittest.TestCase):
         self.assertIn("/v1/chat/stream", response.text)
         self.assertIn("Chat with Adarsh", response.text)
         self.assertIn("/v1/connect/requests", response.text)
+        self.assertIn("height: 100dvh", response.text)
+        self.assertIn("overscroll-behavior: contain", response.text)
+        self.assertIn("position: sticky", response.text)
+        self.assertIn('id="emoji-trigger"', response.text)
+        self.assertIn('id="emoji-picker"', response.text)
+        self.assertIn("emojiSelectionStart", response.text)
+        self.assertIn("document.addEventListener(\"click\"", response.text)
 
     def test_owner_portrait_is_served_as_png(self):
         response = self.client.get("/assets/adarsh-dwivedi.png")

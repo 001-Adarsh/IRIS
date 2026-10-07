@@ -1034,7 +1034,9 @@ def home() -> str:
       .app {
         position: relative;
         z-index: 1;
-        min-height: 100vh;
+        height: 100vh;
+        height: 100dvh;
+        min-height: 0;
         display: grid;
         grid-template-columns: 252px minmax(0, 1fr);
       }
@@ -1189,10 +1191,12 @@ def home() -> str:
       .side-footer strong { color: #d5d3e3; font-weight: 600; }
       main {
         min-width: 0;
-        min-height: 100vh;
+        height: 100%;
+        min-height: 0;
         display: flex;
         flex-direction: column;
         position: relative;
+        overflow: hidden;
       }
       .topbar {
         min-height: 70px;
@@ -1230,10 +1234,12 @@ def home() -> str:
       .content {
         width: min(100%, 960px);
         flex: 1;
+        min-height: 0;
         display: flex;
         flex-direction: column;
         margin: 0 auto;
         padding: 28px;
+        overflow: hidden;
       }
       #welcome {
         flex: 1;
@@ -1307,7 +1313,9 @@ def home() -> str:
       #chat {
         flex: 1;
         min-height: 0;
+        overscroll-behavior: contain;
         overflow-y: auto;
+        overflow-x: hidden;
         display: flex;
         flex-direction: column;
         gap: 22px;
@@ -1351,8 +1359,16 @@ def home() -> str:
         backdrop-filter: blur(12px);
       }
       .error .msg { border-color: #783e49; background: #3a222b; color: #ffd0d0; }
-      .composer-wrap { padding: 12px 0 20px; }
+      .composer-wrap {
+        position: sticky;
+        z-index: 3;
+        bottom: 0;
+        flex: 0 0 auto;
+        padding: 12px 0 max(20px, env(safe-area-inset-bottom));
+        background: linear-gradient(180deg, transparent, #090b12a8 24%, #090b12e8);
+      }
       form {
+        position: relative;
         display: flex;
         align-items: flex-end;
         gap: 12px;
@@ -1372,8 +1388,10 @@ def home() -> str:
       textarea {
         flex: 1;
         min-width: 0;
-        max-height: 180px;
-        min-height: 27px;
+        height: 40px;
+        max-height: 112px;
+        min-height: 40px;
+        overflow-y: hidden;
         resize: none;
         border: 0;
         outline: 0;
@@ -1383,6 +1401,56 @@ def home() -> str:
         line-height: 1.55;
       }
       textarea::placeholder { color: #77798d; }
+      #prompt-form textarea { flex-basis: 40px; }
+      #emoji-trigger {
+        flex: 0 0 38px;
+        width: 38px;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        align-self: flex-end;
+        border: 1px solid #ffffff1c;
+        border-radius: 11px;
+        background: #ffffff08;
+        color: #d7cafa;
+        font-size: 19px;
+        cursor: pointer;
+      }
+      #emoji-trigger:hover,
+      #emoji-trigger[aria-expanded="true"] {
+        border-color: #b7a1ff80;
+        background: #9a7ee21b;
+      }
+      #emoji-picker {
+        position: absolute;
+        z-index: 5;
+        right: 8px;
+        bottom: calc(100% + 10px);
+        width: min(300px, calc(100vw - 48px));
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 4px;
+        padding: 10px;
+        border: 1px solid #ffffff25;
+        border-radius: 15px;
+        background: #11121df5;
+        box-shadow: 0 18px 54px #0009;
+        backdrop-filter: blur(18px);
+      }
+      #emoji-picker[hidden] { display: none; }
+      .emoji-option {
+        width: 36px;
+        height: 36px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        font-size: 20px;
+        cursor: pointer;
+      }
+      .emoji-option:hover,
+      .emoji-option:focus-visible { background: #9a7ee22b; }
       #send {
         flex: 0 0 40px;
         width: 40px;
@@ -1407,7 +1475,7 @@ def home() -> str:
       @media (max-width: 720px) {
         .app { grid-template-columns: 1fr; }
         aside { display: none; }
-        main { min-height: 100dvh; }
+        main { height: 100dvh; min-height: 0; }
         .topbar { min-height: 60px; padding: 0 18px; }
         .topbar-title { max-width: 70%; font-size: 12px; line-height: 1.5; }
         .topbar-actions { gap: 7px; }
@@ -1428,6 +1496,8 @@ def home() -> str:
         #chat { gap: 16px; padding-top: 24px; }
         .msg { max-width: 88%; font-size: 13px; }
         .composer-wrap { padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+        #prompt-form { gap: 7px; padding-left: 12px; }
+        #emoji-trigger { flex-basis: 34px; width: 34px; height: 36px; }
       }
     </style>
   </head>
@@ -1488,6 +1558,23 @@ def home() -> str:
           <div class="composer-wrap">
             <form id="prompt-form">
               <textarea id="prompt" rows="1" maxlength="8000" aria-label="Your message" placeholder="Message IRIS…" required></textarea>
+              <button id="emoji-trigger" type="button" aria-label="Insert emoji" aria-expanded="false" aria-controls="emoji-picker">☺</button>
+              <div id="emoji-picker" role="group" aria-label="Choose an emoji" hidden>
+                <button class="emoji-option" type="button" aria-label="Smiling face">😀</button>
+                <button class="emoji-option" type="button" aria-label="Grinning face">😄</button>
+                <button class="emoji-option" type="button" aria-label="Winking face">😉</button>
+                <button class="emoji-option" type="button" aria-label="Heart eyes">😍</button>
+                <button class="emoji-option" type="button" aria-label="Thinking face">🤔</button>
+                <button class="emoji-option" type="button" aria-label="Thinking">🧐</button>
+                <button class="emoji-option" type="button" aria-label="Crying with laughter">😂</button>
+                <button class="emoji-option" type="button" aria-label="Thumbs up">👍</button>
+                <button class="emoji-option" type="button" aria-label="Clapping">👏</button>
+                <button class="emoji-option" type="button" aria-label="Waving hand">👋</button>
+                <button class="emoji-option" type="button" aria-label="Folded hands">🙏</button>
+                <button class="emoji-option" type="button" aria-label="Sparkles">✨</button>
+                <button class="emoji-option" type="button" aria-label="Heart">❤️</button>
+                <button class="emoji-option" type="button" aria-label="Fire">🔥</button>
+              </div>
               <button id="send" type="submit" aria-label="Send message">
                 <svg viewBox="0 0 24 24" width="19" height="19" fill="none" aria-hidden="true"><path d="M12 19V5m0 0-6 6m6-6 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
               </button>
@@ -1542,13 +1629,14 @@ def home() -> str:
         message.textContent = text;
         row.appendChild(message);
         chat.appendChild(row);
-        row.scrollIntoView({ behavior: "smooth", block: "end" });
+        chat.scrollTop = chat.scrollHeight;
         return message;
       }
 
       newChatButton.addEventListener("click", () => {
         if (activeRequest) activeRequest.abort();
         activeRequest = null;
+        closeEmojiPicker();
         button.disabled = false;
         chat.replaceChildren();
         conversationHistory.length = 0;
@@ -1565,8 +1653,10 @@ def home() -> str:
       });
 
       input.addEventListener("input", () => {
-        input.style.height = "auto";
-        input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
+        input.style.height = "40px";
+        const nextHeight = Math.min(input.scrollHeight, 112);
+        input.style.height = `${nextHeight}px`;
+        input.style.overflowY = input.scrollHeight > 112 ? "auto" : "hidden";
       });
 
       input.addEventListener("keydown", (event) => {
@@ -1581,10 +1671,12 @@ def home() -> str:
         const prompt = input.value.trim();
         if (!prompt || button.disabled) return;
 
+        closeEmojiPicker();
         welcome.hidden = true;
         addMessage(prompt, "user");
         input.value = "";
-        input.style.height = "auto";
+        input.style.height = "40px";
+        input.style.overflowY = "hidden";
         button.disabled = true;
         newChatButton.disabled = true;
         const controller = new AbortController();
@@ -1642,7 +1734,9 @@ def home() -> str:
               if (conversationHistory.length > 10) {
                 conversationHistory.splice(0, conversationHistory.length - 10);
               }
-              chat.scrollTop = chat.scrollHeight;
+              if (chat.scrollHeight - chat.scrollTop - chat.clientHeight < 96) {
+                chat.scrollTop = chat.scrollHeight;
+              }
             }
             if (payload.error) streamError = payload.error;
           };
@@ -1672,6 +1766,56 @@ def home() -> str:
             input.focus();
           }
         }
+      });
+
+      const emojiTrigger = document.getElementById("emoji-trigger");
+      const emojiPicker = document.getElementById("emoji-picker");
+      let emojiSelectionStart = 0;
+      let emojiSelectionEnd = 0;
+
+      function closeEmojiPicker() {
+        emojiPicker.hidden = true;
+        emojiTrigger.setAttribute("aria-expanded", "false");
+      }
+
+      emojiTrigger.addEventListener("click", () => {
+        const opening = emojiPicker.hidden;
+        emojiPicker.hidden = !opening;
+        emojiTrigger.setAttribute("aria-expanded", String(opening));
+        if (opening) {
+          emojiSelectionStart = input.selectionStart;
+          emojiSelectionEnd = input.selectionEnd;
+        } else {
+          input.focus();
+        }
+      });
+
+      emojiPicker.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+
+      emojiPicker.querySelectorAll(".emoji-option").forEach((emojiButton) => {
+        emojiButton.addEventListener("click", () => {
+          const emoji = emojiButton.textContent;
+          const value = input.value;
+          input.value =
+            value.slice(0, emojiSelectionStart) +
+            emoji +
+            value.slice(emojiSelectionEnd);
+          const cursor = emojiSelectionStart + emoji.length;
+          input.setSelectionRange(cursor, cursor);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          closeEmojiPicker();
+          input.focus();
+        });
+      });
+
+      document.addEventListener("click", (event) => {
+        if (!form.contains(event.target)) closeEmojiPicker();
+      });
+
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !emojiPicker.hidden) closeEmojiPicker();
       });
 
       const ownerChatDialog = document.getElementById("owner-connect-dialog");
